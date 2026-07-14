@@ -1,0 +1,4 @@
+std = "roblox"
+
+[files]
+include = ["src"]

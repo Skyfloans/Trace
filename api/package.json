@@ -1,0 +1,33 @@
+{
+  "name": "trace-ingestion-api",
+  "version": "1.0.0",
+  "description": "Trace telemetry ingestion API",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "tsx --test test/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@fastify/compress": "^9.0.0",
+    "@fastify/cookie": "^11.1.1",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/rate-limit": "^11.1.0",
+    "dotenv": "^17.4.2",
+    "fastify": "^5.10.0",
+    "pg": "^8.22.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.23.1",
+    "typescript": "^7.0.2"
+  }
+}

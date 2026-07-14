@@ -1,0 +1,33 @@
+{
+    "stylua.targetReleaseVersion": "latest",
+    "cSpell.words": [
+        "adornee",
+        "Checkmark",
+        "Cooldown",
+        "Debuff",
+        "Gamepass",
+        "gamepasses",
+        "Hitbox",
+        "Keypoint",
+        "keypoints",
+        "minigame",
+        "pcall",
+        "Robux",
+        "tonumber",
+        "Topbar",
+        "tostring",
+        "Walkspeed"
+    ],
+    "editor.tokenColorCustomizations": {
+        "textMateRules": [
+            {
+                "scope": "keyword.other.todo.luau",
+                "settings": {
+                    "foreground": "#ffab0e",
+                    "fontStyle": ""
+                }
+            }
+        ]
+    },
+    "chatgpt.openOnStartup": true
+}

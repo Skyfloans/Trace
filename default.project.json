@@ -1,0 +1,24 @@
+{
+    "name": "Trace",
+    "tree": {
+        "$className": "DataModel",
+        "ReplicatedStorage": {
+            "$ignoreUnknownInstances": true,
+            "$path": "src/ReplicatedStorage",
+            "Packages": {
+                "$path": "Packages"
+            }
+        },
+        "ServerScriptService": {
+            "$ignoreUnknownInstances": true,
+            "$path": "src/server"
+        },
+        "StarterPlayer": {
+            "$className": "StarterPlayer",
+            "StarterPlayerScripts": {
+                "$ignoreUnknownInstances": true,
+                "$path": "src/client"
+            }
+        }
+    }
+}
