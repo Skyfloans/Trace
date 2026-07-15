@@ -9,20 +9,67 @@ type IngestResult = {
   duplicates: number;
 };
 
+type CachedProject = {
+  expiresAt: number;
+  projectId: string;
+};
+
+type IngestionAuthCache = {
+  projects: Map<string, CachedProject>;
+  loads: Map<string, Promise<string | null>>;
+};
+
+const INGESTION_AUTH_CACHE_MS = 15_000;
+const ingestionAuthCaches = new WeakMap<Pool, IngestionAuthCache>();
+
+function getIngestionAuthCache(pool: Pool): IngestionAuthCache {
+  const existing = ingestionAuthCaches.get(pool);
+  if (existing) return existing;
+
+  const created = {
+    projects: new Map<string, CachedProject>(),
+    loads: new Map<string, Promise<string | null>>(),
+  };
+  ingestionAuthCaches.set(pool, created);
+  return created;
+}
+
 export async function findProjectForApiKey(
   pool: Pool,
   apiKey: string,
 ): Promise<string | null> {
   const keyHash = createHash("sha256").update(apiKey).digest();
-  const result = await pool.query<{ project_id: string }>(
-    `SELECT project_id
-     FROM project_api_keys
-     WHERE key_hash = $1
-       AND revoked_at IS NULL`,
-    [keyHash],
-  );
+  const cacheKey = keyHash.toString("hex");
+  const cache = getIngestionAuthCache(pool);
+  const cached = cache.projects.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.projectId;
+  if (cached) cache.projects.delete(cacheKey);
 
-  return result.rows[0]?.project_id ?? null;
+  const pending = cache.loads.get(cacheKey);
+  if (pending) return pending;
+
+  const load = pool
+    .query<{ project_id: string }>(
+      `SELECT project_id
+       FROM project_api_keys
+       WHERE key_hash = $1
+         AND revoked_at IS NULL`,
+      [keyHash],
+    )
+    .then((result) => {
+      const projectId = result.rows[0]?.project_id ?? null;
+      if (projectId) {
+        cache.projects.set(cacheKey, {
+          expiresAt: Date.now() + INGESTION_AUTH_CACHE_MS,
+          projectId,
+        });
+      }
+      return projectId;
+    })
+    .finally(() => cache.loads.delete(cacheKey));
+
+  cache.loads.set(cacheKey, load);
+  return load;
 }
 
 async function upsertJob(
@@ -30,17 +77,16 @@ async function upsertJob(
   projectId: string,
   batch: IngestBatch,
 ): Promise<string> {
-  if (batch.job.universeId) {
-    await client.query(
-      `UPDATE projects
-       SET roblox_universe_id = COALESCE(roblox_universe_id, $2)
-       WHERE id = $1`,
-      [projectId, batch.job.universeId],
-    );
-  }
-
   const result = await client.query<{ id: string }>(
-    `INSERT INTO jobs (
+    `WITH project_update AS (
+       UPDATE projects
+       SET roblox_universe_id = COALESCE(roblox_universe_id, $10)
+       WHERE id = $2
+         AND roblox_universe_id IS NULL
+         AND $10::text IS NOT NULL
+       RETURNING id
+     )
+     INSERT INTO jobs (
        id, project_id, roblox_job_id, place_id, region, release,
        started_at, ended_at, last_seen_at
      )
@@ -61,6 +107,7 @@ async function upsertJob(
       batch.job.startedAt,
       batch.job.endedAt ?? null,
       batch.job.lastSeenAt,
+      batch.job.universeId ?? null,
     ],
   );
 
@@ -78,46 +125,60 @@ async function upsertSessions(
   jobId: string,
   batch: IngestBatch,
 ): Promise<void> {
-  for (const session of batch.sessions) {
-    const result = await client.query(
-      `INSERT INTO sessions (
-         id, project_id, job_id, player_id, player_name, player_display_name,
-         device, platform, started_at, ended_at, last_seen_at, end_reason
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       ON CONFLICT (id) DO UPDATE
-       SET player_name = COALESCE(EXCLUDED.player_name, sessions.player_name),
-           player_display_name = COALESCE(
-             EXCLUDED.player_display_name,
-             sessions.player_display_name
-           ),
-           device = COALESCE(EXCLUDED.device, sessions.device),
-           platform = COALESCE(EXCLUDED.platform, sessions.platform),
-           ended_at = COALESCE(EXCLUDED.ended_at, sessions.ended_at),
-           last_seen_at = GREATEST(EXCLUDED.last_seen_at, sessions.last_seen_at),
-           end_reason = COALESCE(EXCLUDED.end_reason, sessions.end_reason)
-       WHERE sessions.project_id = EXCLUDED.project_id
-         AND sessions.job_id = EXCLUDED.job_id
-       RETURNING id`,
-      [
-        session.id,
-        projectId,
-        jobId,
-        session.playerId,
-        session.playerName ?? null,
-        session.playerDisplayName ?? null,
-        session.device ?? null,
-        session.platform ?? null,
-        session.startedAt,
-        session.endedAt ?? null,
-        session.lastSeenAt,
-        session.endReason ?? null,
-      ],
-    );
+  if (batch.sessions.length === 0) {
+    return;
+  }
 
-    if (result.rowCount !== 1) {
-      throw new Error(`Session ${session.id} belongs to another project or job`);
-    }
+  const result = await client.query(
+    `INSERT INTO sessions (
+       id, project_id, job_id, player_id, player_name, player_display_name,
+       device, platform, started_at, ended_at, last_seen_at, end_reason
+     )
+     SELECT
+       input.id, $1, $2, input.player_id, input.player_name,
+       input.player_display_name, input.device, input.platform,
+       input.started_at, input.ended_at, input.last_seen_at, input.end_reason
+     FROM jsonb_to_recordset($3::jsonb) AS input(
+       id uuid, player_id bigint, player_name text, player_display_name text,
+       device text, platform text, started_at timestamptz, ended_at timestamptz,
+       last_seen_at timestamptz, end_reason text
+     )
+     ON CONFLICT (id) DO UPDATE
+     SET player_name = COALESCE(EXCLUDED.player_name, sessions.player_name),
+         player_display_name = COALESCE(
+           EXCLUDED.player_display_name,
+           sessions.player_display_name
+         ),
+         device = COALESCE(EXCLUDED.device, sessions.device),
+         platform = COALESCE(EXCLUDED.platform, sessions.platform),
+         ended_at = COALESCE(EXCLUDED.ended_at, sessions.ended_at),
+         last_seen_at = GREATEST(EXCLUDED.last_seen_at, sessions.last_seen_at),
+         end_reason = COALESCE(EXCLUDED.end_reason, sessions.end_reason)
+     WHERE sessions.project_id = EXCLUDED.project_id
+       AND sessions.job_id = EXCLUDED.job_id
+     RETURNING id`,
+    [
+      projectId,
+      jobId,
+      JSON.stringify(
+        batch.sessions.map((session) => ({
+          id: session.id,
+          player_id: session.playerId,
+          player_name: session.playerName ?? null,
+          player_display_name: session.playerDisplayName ?? null,
+          device: session.device ?? null,
+          platform: session.platform ?? null,
+          started_at: session.startedAt,
+          ended_at: session.endedAt ?? null,
+          last_seen_at: session.lastSeenAt,
+          end_reason: session.endReason ?? null,
+        })),
+      ),
+    ],
+  );
+
+  if (result.rowCount !== batch.sessions.length) {
+    throw new Error("A session belongs to another project or job");
   }
 }
 
@@ -127,79 +188,163 @@ async function insertEvents(
   jobId: string,
   batch: IngestBatch,
 ): Promise<IngestResult> {
-  let accepted = 0;
-  let duplicates = 0;
+  if (batch.events.length === 0) {
+    return { accepted: 0, duplicates: 0 };
+  }
 
-  for (const event of batch.events) {
-    const normalized = fingerprintEvent(event, batch);
-    const groupResult = await client.query<{ id: string }>(
-      `INSERT INTO error_groups (
-         project_id, fingerprint, source, level, source_script,
-         normalized_message, normalized_stack,
-         first_seen_at, last_seen_at, occurrence_count
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, 0)
-       ON CONFLICT (project_id, fingerprint) DO UPDATE
-       SET source_script = COALESCE(
-         error_groups.source_script,
-         EXCLUDED.source_script
-       )
-       RETURNING id`,
-      [
-        projectId,
-        normalized.fingerprint,
-        event.source,
-        event.level,
-        normalized.normalizedSourceScript,
-        normalized.normalizedMessage,
-        normalized.normalizedStack,
-        event.occurredAt,
-      ],
-    );
+  const normalizedEvents = batch.events.map((event) => ({
+    event,
+    normalized: fingerprintEvent(event, batch),
+  }));
+  const groups = new Map<
+    string,
+    {
+      fingerprint: string;
+      source: string;
+      level: string;
+      sourceScript: string | null;
+      normalizedMessage: string;
+      normalizedStack: string | null;
+      firstSeenAt: string;
+      lastSeenAt: string;
+    }
+  >();
 
-    const groupId = groupResult.rows[0]?.id;
+  for (const { event, normalized } of normalizedEvents) {
+    const lastSeenAt = event.lastOccurredAt ?? event.occurredAt;
+    const existing = groups.get(normalized.fingerprint);
+    if (existing) {
+      if (event.occurredAt < existing.firstSeenAt) {
+        existing.firstSeenAt = event.occurredAt;
+      }
+      if (lastSeenAt > existing.lastSeenAt) {
+        existing.lastSeenAt = lastSeenAt;
+      }
+      continue;
+    }
+    groups.set(normalized.fingerprint, {
+      fingerprint: normalized.fingerprint,
+      source: event.source,
+      level: event.level,
+      sourceScript: normalized.normalizedSourceScript,
+      normalizedMessage: normalized.normalizedMessage,
+      normalizedStack: normalized.normalizedStack,
+      firstSeenAt: event.occurredAt,
+      lastSeenAt,
+    });
+  }
+
+  const groupResult = await client.query<{ id: string; fingerprint: string }>(
+    `INSERT INTO error_groups (
+       project_id, fingerprint, source, level, source_script,
+       normalized_message, normalized_stack,
+       first_seen_at, last_seen_at, occurrence_count
+     )
+     SELECT
+       $1, input.fingerprint, input.source::log_source, input.level::log_level,
+       input.source_script, input.normalized_message, input.normalized_stack,
+       input.first_seen_at, input.last_seen_at, 0
+     FROM jsonb_to_recordset($2::jsonb) AS input(
+       fingerprint text, source text, level text, source_script text,
+       normalized_message text, normalized_stack text,
+       first_seen_at timestamptz, last_seen_at timestamptz
+     )
+     ON CONFLICT (project_id, fingerprint) DO UPDATE
+     SET source_script = COALESCE(
+       error_groups.source_script,
+       EXCLUDED.source_script
+     )
+     RETURNING id, fingerprint`,
+    [
+      projectId,
+      JSON.stringify(
+        [...groups.values()].map((group) => ({
+          fingerprint: group.fingerprint,
+          source: group.source,
+          level: group.level,
+          source_script: group.sourceScript,
+          normalized_message: group.normalizedMessage,
+          normalized_stack: group.normalizedStack,
+          first_seen_at: group.firstSeenAt,
+          last_seen_at: group.lastSeenAt,
+        })),
+      ),
+    ],
+  );
+  const groupIds = new Map(
+    groupResult.rows.map((row) => [row.fingerprint, row.id]),
+  );
+  const occurrences = normalizedEvents.map(({ event, normalized }) => {
+    const groupId = groupIds.get(normalized.fingerprint);
     if (!groupId) {
       throw new Error("Failed to create or find error group");
     }
+    return {
+      id: event.id,
+      group_id: groupId,
+      session_id: event.sessionId ?? null,
+      occurred_at: event.occurredAt,
+      last_occurred_at: event.lastOccurredAt ?? event.occurredAt,
+      repeat_count: event.repeatCount,
+      original_message: event.message,
+      original_stack: event.stack ?? null,
+      context: event.context ?? null,
+    };
+  });
+  const logicalEventCount = occurrences.reduce(
+    (total, event) => total + event.repeat_count,
+    0,
+  );
 
-    const occurrenceResult = await client.query(
-      `INSERT INTO occurrences (
-         id, project_id, group_id, job_id, session_id,
-         occurred_at, original_message, original_stack, context
+  const result = await client.query<{ accepted: number }>(
+    `WITH input AS (
+       SELECT *
+       FROM jsonb_to_recordset($3::jsonb) AS event(
+         id uuid, group_id uuid, session_id uuid, occurred_at timestamptz,
+         last_occurred_at timestamptz, repeat_count integer,
+         original_message text, original_stack text, context jsonb
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     ),
+     inserted AS (
+       INSERT INTO occurrences (
+         id, project_id, group_id, job_id, session_id,
+         occurred_at, last_occurred_at, repeat_count,
+         original_message, original_stack, context
+       )
+       SELECT
+         id, $1, group_id, $2, session_id,
+         occurred_at, last_occurred_at, repeat_count,
+         original_message, original_stack, context
+       FROM input
        ON CONFLICT (id, occurred_at) DO NOTHING
-       RETURNING id`,
-      [
-        event.id,
-        projectId,
-        groupId,
-        jobId,
-        event.sessionId ?? null,
-        event.occurredAt,
-        event.message,
-        event.stack ?? null,
-        event.context ? JSON.stringify(event.context) : null,
-      ],
-    );
-
-    if (occurrenceResult.rowCount === 0) {
-      duplicates += 1;
-      continue;
-    }
-
-    await client.query(
-      `UPDATE error_groups
-       SET first_seen_at = LEAST(first_seen_at, $2),
-           last_seen_at = GREATEST(last_seen_at, $2),
-           occurrence_count = occurrence_count + 1
-       WHERE id = $1`,
-      [groupId, event.occurredAt],
-    );
-    accepted += 1;
-  }
-
-  return { accepted, duplicates };
+       RETURNING group_id, occurred_at, last_occurred_at, repeat_count
+     ),
+     totals AS (
+       SELECT
+         group_id,
+         MIN(occurred_at) AS first_seen_at,
+         MAX(last_occurred_at) AS last_seen_at,
+         SUM(repeat_count)::bigint AS occurrence_count
+       FROM inserted
+       GROUP BY group_id
+     ),
+     updated AS (
+       UPDATE error_groups groups
+       SET first_seen_at = LEAST(groups.first_seen_at, totals.first_seen_at),
+           last_seen_at = GREATEST(groups.last_seen_at, totals.last_seen_at),
+           occurrence_count = groups.occurrence_count + totals.occurrence_count
+       FROM totals
+       WHERE groups.id = totals.group_id
+       RETURNING groups.id
+     )
+     SELECT
+       COALESCE(SUM(inserted.repeat_count), 0)::int AS accepted,
+       (SELECT COUNT(*) FROM updated) AS updated_group_count
+     FROM inserted`,
+    [projectId, jobId, JSON.stringify(occurrences)],
+  );
+  const accepted = result.rows[0]?.accepted ?? 0;
+  return { accepted, duplicates: logicalEventCount - accepted };
 }
 
 export async function ingestBatch(

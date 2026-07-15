@@ -42,6 +42,8 @@ const eventSchema = z
     id: z.uuid(),
     sessionId: z.uuid().optional(),
     occurredAt: timestamp,
+    lastOccurredAt: timestamp.optional(),
+    repeatCount: z.number().int().min(1).max(10_000).default(1),
     source: z.enum(["client", "server"]),
     level: z.enum(["trace", "info", "warning", "error"]),
     message: z.string().min(1).max(4_000),
@@ -62,8 +64,26 @@ export const ingestBatchSchema = z
   .strict()
   .superRefine((batch, context) => {
     const sessionIds = new Set(batch.sessions.map((session) => session.id));
+    if (sessionIds.size !== batch.sessions.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessions"],
+        message: "Session IDs must be unique within a batch",
+      });
+    }
 
     for (const [index, event] of batch.events.entries()) {
+      if (
+        event.lastOccurredAt &&
+        Date.parse(event.lastOccurredAt) < Date.parse(event.occurredAt)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["events", index, "lastOccurredAt"],
+          message: "lastOccurredAt cannot be earlier than occurredAt",
+        });
+      }
+
       if (
         event.source === "client" &&
         (!event.sessionId || !sessionIds.has(event.sessionId))

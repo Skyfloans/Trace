@@ -69,6 +69,12 @@ GET /v1/projects/{projectId}/server-jobs/{serverJobId}/logs
 GET /v1/projects/{projectId}/server-jobs/{serverJobId}/sessions
 ```
 
+Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
+the first event represented by that sampled row. Group, activity, session, and
+job counts sum `repeatCount`, so compact storage does not change displayed
+event totals. Occurrence lists return sampled aggregate rows rather than
+expanding repeated events back into duplicate JSON objects.
+
 Query parameters and response shapes follow
 `Trace_Portal/READ_API_HANDOFF.md`.
 

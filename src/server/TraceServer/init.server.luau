@@ -114,6 +114,10 @@ clientLogRemote.OnServerEvent:Connect(function(player, payload)
 	local message = sanitizeString(payload.message, Protocol.MaxMessageLength)
 	if typeof(level) ~= "string" or not allowedLevels[level] or not message or message == "" then return end
 	level = level :: Level
+	local repeatCount = 1
+	if typeof(payload.repeatCount) == "number" and payload.repeatCount == payload.repeatCount then
+		repeatCount = math.clamp(math.floor(payload.repeatCount), 1, Protocol.MaxRepeatCount)
+	end
 
 	local allowed, dropped = consumeClientRateLimit(player)
 	if not allowed then return end
@@ -145,6 +149,7 @@ clientLogRemote.OnServerEvent:Connect(function(player, payload)
 		stack = sanitizeString(payload.stack, Protocol.MaxStackLength),
 		sourceScript = sanitizeString(payload.sourceScript, Protocol.MaxSourceScriptLength),
 		context = context,
+		repeatCount = repeatCount,
 	})
 end)
 

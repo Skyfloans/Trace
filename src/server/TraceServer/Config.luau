@@ -1,19 +1,17 @@
 local RunService = game:GetService("RunService")
 
 local Config = {
-	-- Replace this with the deployed Trace API URL before publishing.
-	Endpoint = "http://127.0.0.1:3000",
+	Endpoint = "https://trace-production-c9d4.up.railway.app",
 
-	-- Create this secret in Experience Settings > Security > Secrets.
-	IngestionSecretName = "TRACE_INGEST_KEY",
+	IngestionSecretName = "TraceKey",
 
-	-- Local play tests cannot always access experience secrets. Leave this nil
-	-- in committed code; set it temporarily only in a local, uncommitted copy.
 	DevelopmentIngestionKey = nil :: string?,
 
 	FlushIntervalSeconds = 5,
 	HeartbeatIntervalSeconds = 60,
 	MaxEventsPerBatch = 100,
+	MaxRepeatCount = 10_000,
+	MaxBatchUncompressedBytes = 256_000,
 	MaxSessionsPerBatch = 100,
 	MaxQueuedEvents = 1_000,
 	CaptureOutputMessages = false,

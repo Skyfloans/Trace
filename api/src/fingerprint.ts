@@ -6,6 +6,8 @@ const uuidPattern =
 const isoTimestampPattern =
   /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g;
 const memoryAddressPattern = /\b0x[0-9a-f]+\b/gi;
+const replicatedMountPlayerIdPattern = /(ReplicatedMounts\.)\d{3,20}\b/g;
+const serviceUserIdPattern = /(\bUser\s+)\d{3,20}\b/gi;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -24,6 +26,15 @@ function replacePlayerName(value: string, playerName: string): string {
   return value.replace(pattern, "$1<PLAYER_NAME>");
 }
 
+function replacePlayerId(value: string, playerId: string): string {
+  if (playerId.length < 3) {
+    return value;
+  }
+
+  const pattern = new RegExp(`(^|\\D)${escapeRegExp(playerId)}(?=$|\\D)`, "g");
+  return value.replace(pattern, "$1<PLAYER_ID>");
+}
+
 export function normalizeText(value: string, batch: IngestBatch): string {
   let normalized = value.replaceAll("\r\n", "\n").trim();
 
@@ -38,9 +49,12 @@ export function normalizeText(value: string, batch: IngestBatch): string {
     if (session.playerName) {
       normalized = replacePlayerName(normalized, session.playerName);
     }
+    normalized = replacePlayerId(normalized, session.playerId);
   }
 
   return normalized
+    .replace(replicatedMountPlayerIdPattern, "$1<PLAYER_ID>")
+    .replace(serviceUserIdPattern, "$1<PLAYER_ID>")
     .replace(uuidPattern, "<UUID>")
     .replace(isoTimestampPattern, "<TIMESTAMP>")
     .replace(memoryAddressPattern, "<ADDRESS>");
@@ -68,7 +82,6 @@ export function fingerprintEvent(
     event.level,
     normalizedSourceScript ?? "",
     normalizedMessage,
-    normalizedStack ?? "",
   ].join("\0");
 
   return {

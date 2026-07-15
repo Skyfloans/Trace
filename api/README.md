@@ -35,6 +35,10 @@ The API accepts at most 100 sessions, 100 events, and 512 KiB of decompressed
 JSON per request. Events older than three days or more than ten minutes in the
 future are rejected.
 
+Valid ingestion-key lookups are cached in-process for 15 seconds. Rate limits
+are isolated per authenticated project key and Roblox server job at 120
+requests per minute, so separate live servers do not consume one shared bucket.
+
 `events` may be empty so join, leave, heartbeat, and job lifecycle updates can
 be recorded even when no errors occur.
 
@@ -64,6 +68,8 @@ be recorded even when no errors occur.
       "id": "a unique UUID",
       "sessionId": "required for client events",
       "occurredAt": "2026-07-13T23:00:30.000Z",
+      "lastOccurredAt": "2026-07-13T23:00:34.000Z",
+      "repeatCount": 47,
       "source": "client",
       "level": "error",
       "message": "PlayerName is not a valid member of Workspace",
@@ -78,6 +84,23 @@ be recorded even when no errors occur.
 ```
 
 Server events omit `sessionId`; they are associated with the server job.
+
+`repeatCount` defaults to `1`. Roblox clients combine identical events for one
+second before relaying them to the Roblox server. The server combines them
+again during each five-second HTTP flush window, retaining the first full
+message/stack and the exact first/last server timestamps. This keeps grouped
+counts and session/job attribution while avoiding one database row per repeat.
+A repeat aggregate is capped at 10,000 events. The SDK also caps uncompressed
+batches at approximately 256 KiB before gzip, safely below the API's 512 KiB
+decompressed limit.
+
+Ingestion uses set-based group, occurrence, and session writes. Retried
+aggregate UUIDs remain idempotent, and accepted counts represent logical events
+rather than physical occurrence rows.
+
+Migration 004 is rolling-deploy compatible: the old API can continue writing
+one-count rows while Railway replaces it, and reads treat a temporarily absent
+`lastOccurredAt` as equal to `occurredAt`.
 
 ## Roblox transport compression
 

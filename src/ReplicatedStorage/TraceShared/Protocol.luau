@@ -3,6 +3,9 @@ local Protocol = {
 	MaxMessageLength = 4_000,
 	MaxStackLength = 16_000,
 	MaxSourceScriptLength = 512,
+	MaxRepeatCount = 10_000,
+	ClientFlushIntervalSeconds = 1,
+	MaxPendingClientGroups = 100,
 	ClientRateWindowSeconds = 10,
 	ClientRateLimit = 30,
 }

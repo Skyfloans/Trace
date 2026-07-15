@@ -135,9 +135,9 @@ export async function registerJobRoutes(
          ) session_stats ON true
          JOIN LATERAL (
            SELECT
-             COUNT(*)::int AS event_count,
-             COUNT(*) FILTER (WHERE eg.level = 'error')::int AS error_count,
-             COUNT(*) FILTER (WHERE eg.level = 'warning')::int AS warning_count
+             COALESCE(SUM(o.repeat_count), 0)::int AS event_count,
+             COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.level = 'error'), 0)::int AS error_count,
+             COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.level = 'warning'), 0)::int AS warning_count
            FROM occurrences o
            JOIN error_groups eg ON eg.id = o.group_id
            WHERE o.project_id = j.project_id AND o.job_id = j.id

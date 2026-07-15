@@ -87,14 +87,16 @@ export async function registerSessionAndLogRoutes(
       const search = z
         .string()
         .trim()
-        .min(1)
         .max(64)
+        .optional()
+        .default("")
         .parse(query.query);
-      const limit = clampLimit(query.limit as string | undefined, 20, 20);
-      const numeric = /^\d+$/.test(search);
+      const limit = clampLimit(query.limit as string | undefined, 20, 50);
+      const numeric = search.length > 0 && /^\d+$/.test(search);
 
-      const result = await pool.query(
-        `WITH ranked AS (
+      const result = search
+        ? await pool.query(
+          `WITH ranked AS (
            SELECT DISTINCT ON (s.player_id)
              s.player_id, s.player_name, s.player_display_name, s.avatar_url,
              CASE
@@ -117,8 +119,23 @@ export async function registerSessionAndLogRoutes(
          FROM ranked
          ORDER BY rank, lower(player_name), player_id
          LIMIT $4`,
-        [projectId, numeric, search, limit],
-      );
+          [projectId, numeric, search, limit],
+        )
+        : await pool.query(
+          `WITH recent AS (
+             SELECT DISTINCT ON (s.player_id)
+               s.player_id, s.player_name, s.player_display_name, s.avatar_url,
+               s.last_seen_at
+             FROM sessions s
+             WHERE s.project_id = $1
+             ORDER BY s.player_id, s.last_seen_at DESC
+           )
+           SELECT *
+           FROM recent
+           ORDER BY last_seen_at DESC NULLS LAST, player_id
+           LIMIT $2`,
+          [projectId, limit],
+        );
 
       cache(reply, 10);
       return {

@@ -3,7 +3,10 @@ import compress from "@fastify/compress";
 import cookie from "@fastify/cookie";
 import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyRequest,
+} from "fastify";
 import type { Pool } from "pg";
 import { ZodError } from "zod";
 import { ingestBatchSchema } from "./schema.js";
@@ -13,6 +16,24 @@ import { registerReadApi } from "./read/index.js";
 
 const MAX_EVENT_AGE_MS = 3 * 24 * 60 * 60 * 1_000;
 const MAX_FUTURE_SKEW_MS = 10 * 60 * 1_000;
+
+export function ingestionRateLimitKey(request: FastifyRequest): string {
+  const body = request.body as
+    | { job?: { id?: unknown; robloxJobId?: unknown } }
+    | undefined;
+  const jobIdentity =
+    typeof body?.job?.id === "string"
+      ? body.job.id
+      : typeof body?.job?.robloxJobId === "string"
+        ? body.job.robloxJobId
+        : "unknown-job";
+
+  return createHash("sha256")
+    .update(request.headers.authorization ?? request.ip)
+    .update("\0")
+    .update(jobIdentity)
+    .digest("hex");
+}
 
 function readBearerToken(authorization: string | undefined): string | null {
   if (!authorization?.startsWith("Bearer ")) {
@@ -66,10 +87,7 @@ export async function buildApp(
 
   await app.register(rateLimit, {
     global: false,
-    keyGenerator: (request) =>
-      createHash("sha256")
-        .update(request.headers.authorization ?? request.ip)
-        .digest("hex"),
+    keyGenerator: ingestionRateLimitKey,
   });
 
   app.addHook("onSend", async (request, reply, payload) => {
@@ -120,6 +138,7 @@ export async function buildApp(
         rateLimit: {
           max: 120,
           timeWindow: "1 minute",
+          hook: "preHandler",
         },
       },
     },
@@ -146,7 +165,10 @@ export async function buildApp(
       }
 
       const timestampError = validateEventTimes(
-        parsed.data.events.map((event) => event.occurredAt),
+        parsed.data.events.flatMap((event) => [
+          event.occurredAt,
+          event.lastOccurredAt ?? event.occurredAt,
+        ]),
       );
       if (timestampError) {
         return reply.code(422).send({ error: timestampError });

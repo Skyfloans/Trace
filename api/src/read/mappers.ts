@@ -25,6 +25,8 @@ export function mapOccurrence(row: AnyRow) {
     id: String(row.id),
     projectId: String(row.project_id),
     occurredAt: iso(row.occurred_at as Date | string),
+    lastOccurredAt: iso(row.last_occurred_at as Date | string),
+    repeatCount: Number(row.repeat_count ?? 1),
     receivedAt: iso(row.received_at as Date | string),
     severity: String(row.severity),
     side: String(row.side),
@@ -72,6 +74,8 @@ export const occurrenceSelect = `
   o.id,
   o.project_id,
   o.occurred_at,
+  COALESCE(o.last_occurred_at, o.occurred_at) AS last_occurred_at,
+  o.repeat_count,
   o.received_at,
   eg.level AS severity,
   eg.source AS side,
@@ -113,8 +117,8 @@ export const sessionSelect = `
 export const sessionCountJoin = `
   LEFT JOIN LATERAL (
     SELECT
-      COUNT(*) FILTER (WHERE eg.level = 'error')::int AS error_count,
-      COUNT(*) FILTER (WHERE eg.level = 'warning')::int AS warning_count
+      COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.level = 'error'), 0)::int AS error_count,
+      COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.level = 'warning'), 0)::int AS warning_count
     FROM occurrences o
     JOIN error_groups eg ON eg.id = o.group_id
     WHERE o.project_id = s.project_id

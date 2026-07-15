@@ -8,6 +8,8 @@ type Config = {
 	FlushIntervalSeconds: number,
 	HeartbeatIntervalSeconds: number,
 	MaxEventsPerBatch: number,
+	MaxRepeatCount: number,
+	MaxBatchUncompressedBytes: number,
 	MaxSessionsPerBatch: number,
 	MaxQueuedEvents: number,
 }
@@ -37,6 +39,9 @@ export type Event = {
 	stack: string?,
 	sourceScript: string?,
 	context: { [string]: any }?,
+	lastOccurredAt: string?,
+	repeatCount: number?,
+	_aggregationKey: string?,
 }
 
 type Batcher = {
@@ -49,6 +54,7 @@ type Batcher = {
 	_sessionVersions: { [string]: number },
 	_sentSessionVersions: { [string]: number },
 	_events: { Event },
+	_pendingEventsByKey: { [string]: Event },
 	_running: boolean,
 	_flushing: boolean,
 	_nextAttemptAt: number,
@@ -59,7 +65,7 @@ type Batcher = {
 	Start: (self: Batcher) -> (),
 	Flush: (self: Batcher, force: boolean?) -> boolean,
 	FlushAll: (self: Batcher, maximumBatches: number?) -> boolean,
-	_buildBatch: (self: Batcher) -> ({ [string]: any }, number, { [string]: number }, number),
+	_buildBatch: (self: Batcher, eventLimit: number?) -> ({ [string]: any }, number, { [string]: number }, number),
 	_hasPendingData: (self: Batcher) -> boolean,
 }
 
@@ -106,6 +112,7 @@ function Batcher.new(config: Config): Batcher
 		_sessionVersions = {},
 		_sentSessionVersions = {},
 		_events = {},
+		_pendingEventsByKey = {},
 		_running = false,
 		_flushing = false,
 		_nextAttemptAt = 0,
@@ -121,9 +128,33 @@ function Batcher:UpdateSession(session: Session)
 end
 
 function Batcher:AddEvent(event: Event): boolean
+	local aggregationKey = table.concat({
+		event.sessionId or "",
+		event.source,
+		event.level,
+		event.sourceScript or "",
+		event.message,
+	}, "\0")
+	local pending = self._pendingEventsByKey[aggregationKey]
+	if pending then
+		local combinedCount = (pending.repeatCount or 1) + (event.repeatCount or 1)
+		if combinedCount <= self._config.MaxRepeatCount then
+			pending.repeatCount = combinedCount
+			pending.lastOccurredAt = event.lastOccurredAt or event.occurredAt
+			return true
+		end
+		if #self._events >= self._config.MaxQueuedEvents then return false end
+		self._pendingEventsByKey[aggregationKey] = nil
+	end
+
 	if #self._events >= self._config.MaxQueuedEvents then return false end
 
-	table.insert(self._events, table.clone(event))
+	local queuedEvent = table.clone(event)
+	queuedEvent.repeatCount = event.repeatCount or 1
+	queuedEvent.lastOccurredAt = event.lastOccurredAt or event.occurredAt
+	queuedEvent._aggregationKey = aggregationKey
+	table.insert(self._events, queuedEvent)
+	self._pendingEventsByKey[aggregationKey] = queuedEvent
 	return true
 end
 
@@ -135,15 +166,16 @@ function Batcher:MarkJobEnded()
 	self._jobVersion += 1
 end
 
-function Batcher:_buildBatch(): ({ [string]: any }, number, { [string]: number }, number)
-	local eventCount = math.min(#self._events, self._config.MaxEventsPerBatch)
+function Batcher:_buildBatch(eventLimit: number?): ({ [string]: any }, number, { [string]: number }, number)
+	local eventCount = math.min(#self._events, eventLimit or self._config.MaxEventsPerBatch)
 	local events = table.create(eventCount)
 	local sessions = {}
 	local selectedSessionVersions = {}
 
 	for index = 1, eventCount do
 		local event = self._events[index]
-		events[index] = event
+		events[index] = table.clone(event)
+		events[index]._aggregationKey = nil
 
 		local sessionId = event.sessionId
 		if sessionId and not selectedSessionVersions[sessionId] then
@@ -193,12 +225,23 @@ function Batcher:Flush(force: boolean?): boolean
 	self._flushing = true
 	self._job.lastSeenAt = nowIso()
 
-	local batch, eventCount, sessionVersions, jobVersion = self:_buildBatch()
+	local eventLimit = self._config.MaxEventsPerBatch
+	local batch, eventCount, sessionVersions, jobVersion = self:_buildBatch(eventLimit)
 	local encodeSuccess, encodedBody = pcall(HttpService.JSONEncode, HttpService, batch)
 	if not encodeSuccess then
 		self._flushing = false
 		warn("[Trace] Failed to encode telemetry batch.")
 		return false
+	end
+	while #encodedBody > self._config.MaxBatchUncompressedBytes and eventCount > 1 do
+		eventLimit = math.max(1, math.floor(eventCount / 2))
+		batch, eventCount, sessionVersions, jobVersion = self:_buildBatch(eventLimit)
+		encodeSuccess, encodedBody = pcall(HttpService.JSONEncode, HttpService, batch)
+		if not encodeSuccess then
+			self._flushing = false
+			warn("[Trace] Failed to encode telemetry batch.")
+			return false
+		end
 	end
 
 	local requestSuccess, response = pcall(HttpService.RequestAsync, HttpService, {
@@ -215,7 +258,11 @@ function Batcher:Flush(force: boolean?): boolean
 	local success = requestSuccess and response.Success
 	if success then
 		for _ = 1, eventCount do
-			table.remove(self._events, 1)
+			local sentEvent = table.remove(self._events, 1)
+			local aggregationKey = sentEvent._aggregationKey
+			if aggregationKey and self._pendingEventsByKey[aggregationKey] == sentEvent then
+				self._pendingEventsByKey[aggregationKey] = nil
+			end
 		end
 		for sessionId, version in sessionVersions do
 			if self._sessionVersions[sessionId] == version then self._sentSessionVersions[sessionId] = version end

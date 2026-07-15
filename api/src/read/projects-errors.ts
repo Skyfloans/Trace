@@ -165,11 +165,11 @@ export async function registerProjectAndErrorRoutes(
         `WITH stats AS (
            SELECT
              o.group_id,
-             COUNT(*)::int AS event_count,
+             SUM(o.repeat_count)::int AS event_count,
              COUNT(DISTINCT s.player_id)::int AS affected_player_count,
              COUNT(DISTINCT o.job_id)::int AS affected_server_count,
              MIN(o.occurred_at) AS first_seen_at,
-             MAX(o.occurred_at) AS last_seen_at
+             MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
            FROM occurrences o
            JOIN error_groups eg ON eg.id = o.group_id
            LEFT JOIN sessions s ON s.id = o.session_id
@@ -262,11 +262,11 @@ export async function registerProjectAndErrorRoutes(
          ),
          stats AS (
            SELECT
-             COUNT(*)::int AS event_count,
+             COALESCE(SUM(matching.repeat_count), 0)::int AS event_count,
              COUNT(DISTINCT s.player_id)::int AS affected_player_count,
              COUNT(DISTINCT matching.job_id)::int AS affected_server_count,
              MIN(matching.occurred_at) AS first_seen_at,
-             MAX(matching.occurred_at) AS last_seen_at
+             MAX(COALESCE(matching.last_occurred_at, matching.occurred_at)) AS last_seen_at
            FROM matching
            LEFT JOIN sessions s ON s.id = matching.session_id
          ),
@@ -424,8 +424,8 @@ export async function registerProjectAndErrorRoutes(
       const result = await pool.query(
         `SELECT
            date_trunc('${bucket}', o.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
-           COUNT(*) FILTER (WHERE eg.source = 'client')::int AS client_count,
-           COUNT(*) FILTER (WHERE eg.source = 'server')::int AS server_count
+           COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'client'), 0)::int AS client_count,
+           COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'server'), 0)::int AS server_count
          FROM occurrences o
          JOIN error_groups eg ON eg.id = o.group_id
          WHERE ${conditions.join(" AND ")}
