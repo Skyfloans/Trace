@@ -4,7 +4,7 @@ import test from "node:test";
 import type { Pool } from "pg";
 import type { FastifyRequest } from "fastify";
 import { buildApp, ingestionRateLimitKey } from "../src/app.js";
-import { findProjectForApiKey } from "../src/repository.js";
+import { findProjectForApiKey, verifyProjectUniverse } from "../src/repository.js";
 import {
   decodeCursor,
   encodeCursor,
@@ -182,6 +182,30 @@ test("valid ingestion keys reuse a short-lived project lookup", async () => {
   const key = "tr_ingest_test_key_that_is_long_enough";
   assert.equal(await findProjectForApiKey(pool, key), await findProjectForApiKey(pool, key));
   assert.equal(queries, 1);
+});
+
+test("the first matching ingestion verifies a linked universe", async () => {
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const pool = {
+    query: async (sql: string, values: unknown[]) => {
+      assert.match(sql, /roblox_universe_id/);
+      assert.deepEqual(values, [projectId, "10395108329"]);
+      return { rows: [{ matches: true }], rowCount: 1 };
+    },
+  } as unknown as Pool;
+
+  assert.equal(await verifyProjectUniverse(pool, projectId, "10395108329"), true);
+});
+
+test("ingestion from a different universe cannot verify a linked game", async () => {
+  const pool = {
+    query: async () => ({ rows: [{ matches: false }], rowCount: 1 }),
+  } as unknown as Pool;
+
+  assert.equal(
+    await verifyProjectUniverse(pool, "20000000-0000-4000-8000-000000000001", "999"),
+    false,
+  );
 });
 
 test("read endpoints reject unauthenticated requests", async () => {
@@ -949,6 +973,68 @@ test("admins can remove viewers but cannot remove another admin", async () => {
   });
   assert.equal(removed.statusCode, 204);
   assert.equal(membershipDeletes, 1);
+  await app.close();
+});
+
+test("only an owner can permanently delete a project", async () => {
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const userId = "10000000-0000-4000-8000-000000000001";
+  let deleted = false;
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{ id: userId, name: "Owner", robloxUserId: "123" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("SELECT role") && sql.includes("FROM project_memberships")) {
+        assert.deepEqual(values, [userId, projectId]);
+        return { rows: [{ role: "owner" }], rowCount: 1 };
+      }
+      if (sql.startsWith("DELETE FROM projects")) {
+        assert.deepEqual(values, [projectId]);
+        deleted = true;
+        return { rows: [{ id: projectId }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "DELETE",
+    url: `/v1/manage/projects/${projectId}`,
+    headers: { authorization: `Bearer ${"o".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(deleted, true);
+  await app.close();
+});
+
+test("an admin cannot delete a project", async () => {
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return { rows: [{ id: "10000000-0000-4000-8000-000000000001", name: "Admin" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ role: "admin" }], rowCount: 1 };
+      }
+      if (sql.startsWith("DELETE FROM projects")) throw new Error("Admin reached project deletion");
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "DELETE",
+    url: `/v1/manage/projects/${projectId}`,
+    headers: { authorization: `Bearer ${"a".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 403);
+  assert.equal(response.json().error.code, "project_role_forbidden");
   await app.close();
 });
 

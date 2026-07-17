@@ -10,7 +10,7 @@ import Fastify, {
 import type { Pool } from "pg";
 import { ZodError } from "zod";
 import { ingestBatchSchema } from "./schema.js";
-import { findProjectForApiKey, ingestBatch } from "./repository.js";
+import { findProjectForApiKey, ingestBatch, verifyProjectUniverse } from "./repository.js";
 import { ReadApiError } from "./read/http.js";
 import { registerReadApi } from "./read/index.js";
 import type { RobloxOAuthConfig } from "./read/account.js";
@@ -177,6 +177,13 @@ export async function buildApp(
       );
       if (timestampError) {
         return reply.code(422).send({ error: timestampError });
+      }
+
+      const universeId = parsed.data.job.universeId;
+      if (!universeId || !(await verifyProjectUniverse(pool, projectId, universeId))) {
+        return reply.code(403).send({
+          error: "The ingestion key is not configured for this Roblox universe",
+        });
       }
 
       const result = await ingestBatch(pool, projectId, parsed.data);

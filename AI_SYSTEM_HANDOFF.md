@@ -156,7 +156,14 @@ Apply them once, in order, to a new database. They are normal sequential
 migrations, not repeatedly idempotent setup scripts.
 
 Neon Auth is not used. Trace owns its `users`, `project_memberships`,
-`web_sessions`, Roblox OAuth flow, universe claim, and invitation tables.
+`web_sessions`, Roblox sign-in flow, ingestion verification, and invitation
+tables.
+
+New games no longer require an OAuth universe claim. Linking immediately
+creates a project and ingestion key in a pending state. Each authenticated
+batch must have a `job.universeId` matching the linked universe; batches from
+any other universe are rejected. A project is considered verified once its
+first matching job is stored.
 
 ### Roblox live configuration
 

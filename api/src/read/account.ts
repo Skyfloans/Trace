@@ -567,9 +567,13 @@ export async function registerAccountRoutes(
     async (request) => {
       const { universeId } = universeParamsSchema.parse(request.params);
       const metadata = await getGameMetadata(universeId);
-      if (!metadata.name) throw new ReadApiError(404, "universe_not_found", "That Roblox universe was not found.");
       const claimed = await pool.query("SELECT 1 FROM projects WHERE roblox_universe_id = $1", [universeId]);
-      return { ...metadata, available: claimed.rowCount === 0 };
+      return {
+        universeId,
+        name: metadata.name ?? `Universe ${universeId}`,
+        iconUrl: metadata.iconUrl,
+        available: claimed.rowCount === 0,
+      };
     },
   );
 
@@ -585,7 +589,8 @@ export async function registerAccountRoutes(
   app.get("/v1/manage/projects", { preHandler: authenticate }, async (request) => {
     const user = requireReadUser(request);
     const result = await pool.query(
-      `SELECT p.id, p.name, p.roblox_universe_id, p.icon_url, pm.role,
+      `SELECT p.id, p.name, p.roblox_universe_id, p.icon_url,
+              verification.verified_at, pm.role,
               key.key_hint, key.created_at AS key_created_at,
               COUNT(inv.id) FILTER (WHERE inv.accepted_at IS NULL AND inv.revoked_at IS NULL)::int AS pending_invitation_count
        FROM projects p
@@ -595,8 +600,12 @@ export async function registerAccountRoutes(
          WHERE project_id = p.id AND revoked_at IS NULL
          ORDER BY created_at DESC LIMIT 1
        ) key ON true
+       LEFT JOIN LATERAL (
+         SELECT MIN(started_at) AS verified_at FROM jobs
+         WHERE project_id = p.id
+       ) verification ON true
        LEFT JOIN project_invitations inv ON inv.project_id = p.id
-       GROUP BY p.id, pm.role, key.key_hint, key.created_at
+       GROUP BY p.id, pm.role, key.key_hint, key.created_at, verification.verified_at
        ORDER BY p.name, p.id`,
       [user.id],
     );
@@ -606,6 +615,7 @@ export async function registerAccountRoutes(
         name: row.name,
         robloxUniverseId: row.roblox_universe_id,
         iconUrl: row.icon_url,
+        verifiedAt: row.verified_at ? new Date(row.verified_at).toISOString() : null,
         role: row.role,
         keyHint: row.key_hint,
         keyCreatedAt: row.key_created_at ? new Date(row.key_created_at).toISOString() : null,
@@ -751,25 +761,16 @@ export async function registerAccountRoutes(
     const user = requireReadUser(request);
     const { universeId } = universeParamsSchema.parse(request.body);
     const metadata = await getGameMetadata(universeId);
-    if (!metadata.name) throw new ReadApiError(404, "universe_not_found", "That Roblox universe was not found.");
+    const projectName = metadata.name ?? `Universe ${universeId}`;
     const ingestionKey = `tr_ingest_${randomToken(32)}`;
     const keyHint = `••••${ingestionKey.slice(-6)}`;
     const client = await beginTransaction(pool);
     try {
-      const verification = await client.query(
-        `DELETE FROM verified_universe_claims
-         WHERE user_id = $1 AND universe_id = $2 AND expires_at > now()
-         RETURNING universe_id`,
-        [user.id, universeId],
-      );
-      if (verification.rowCount !== 1) {
-        throw new ReadApiError(403, "universe_verification_required", "Verify ownership with Roblox before linking this experience.");
-      }
       const project = await client.query<{ id: string }>(
         `INSERT INTO projects (name, roblox_universe_id, icon_url)
          VALUES ($1, $2, $3)
          RETURNING id`,
-        [metadata.name, universeId, metadata.iconUrl],
+        [projectName, universeId, metadata.iconUrl],
       );
       const projectId = project.rows[0]!.id;
       await client.query(
@@ -783,7 +784,7 @@ export async function registerAccountRoutes(
       );
       await client.query("COMMIT");
       return reply.code(201).send({
-        project: { id: projectId, name: metadata.name, robloxUniverseId: universeId, iconUrl: metadata.iconUrl, role: "owner" },
+        project: { id: projectId, name: projectName, robloxUniverseId: universeId, iconUrl: metadata.iconUrl, role: "owner", verifiedAt: null },
         ingestionKey,
       });
     } catch (error) {
@@ -796,6 +797,24 @@ export async function registerAccountRoutes(
       client.release();
     }
   });
+
+  app.delete(
+    "/v1/manage/projects/:projectId",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { projectId } = projectParamsSchema.parse(request.params);
+      const { user } = await requireProjectRole(pool, request, projectId, ["owner"]);
+      const result = await pool.query(
+        "DELETE FROM projects WHERE id = $1 RETURNING id",
+        [projectId],
+      );
+      if (result.rowCount !== 1) {
+        throw new ReadApiError(404, "project_not_found", "That game is no longer linked to Trace.");
+      }
+      invalidateProjectMembership(pool, user.id, projectId);
+      return reply.code(204).send();
+    },
+  );
 
   app.post(
     "/v1/manage/projects/:projectId/keys/rotate",

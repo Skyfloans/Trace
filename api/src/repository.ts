@@ -72,6 +72,21 @@ export async function findProjectForApiKey(
   return load;
 }
 
+export async function verifyProjectUniverse(
+  pool: Pool,
+  projectId: string,
+  universeId: string,
+): Promise<boolean> {
+  const result = await pool.query<{ matches: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1 FROM projects
+       WHERE id = $1 AND roblox_universe_id = $2
+     ) AS matches`,
+    [projectId, universeId],
+  );
+  return result.rows[0]?.matches ?? false;
+}
+
 async function upsertJob(
   client: PoolClient,
   projectId: string,
