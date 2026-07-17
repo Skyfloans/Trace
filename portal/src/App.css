@@ -1565,6 +1565,21 @@ kbd {
 .account-chip strong { font-size: 12px; }
 .account-chip small { margin-top: 1px; color: var(--muted); font-size: 11px; }
 
+.session-gate {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #f0f4f6;
+  background: #0e1720;
+}
+.session-gate-brand { display: flex; align-items: center; gap: 12px; }
+.session-gate-brand img { width: 46px; height: 49px; object-fit: contain; }
+.session-gate-brand strong { font-size: 34px; line-height: 1; letter-spacing: -.04em; }
+.session-gate-status { display: flex; align-items: center; gap: 8px; margin-top: 22px; color: #8998a2; font-size: 12px; }
+.session-gate-status span { width: 14px; height: 14px; border: 2px solid #40505d; border-top-color: #ff580f; border-radius: 50%; }
+
 .auth-layout {
   --bg: #121a23;
   --sidebar: #0e151d;
@@ -1613,8 +1628,6 @@ kbd {
 .roblox-mark { position: relative; width: 18px; height: 18px; display: grid; place-items: center; margin-right: 2px; transform: rotate(12deg); background: currentColor; }
 .roblox-mark i { width: 6px; height: 6px; display: block; background: rgb(51, 95, 255); }
 .primary-button.roblox-sign-in:hover .roblox-mark i { background: rgb(42, 82, 235); }
-.auth-session-status { min-height: 82px; display: flex; align-items: center; gap: 9px; margin-top: 15px; color: #aebbc5; font-size: 13px; }
-.auth-session-spinner { width: 16px; height: 16px; border: 2px solid #53616c; border-top-color: #ff7a1a; border-radius: 50%; }
 .auth-footnote { display: flex; align-items: center; gap: 6px; margin: 14px 0 0; color: #82919c; font-size: 11px; line-height: 1.5; }
 .auth-error { width: min(100%, 420px); margin-top: 22px; padding: 12px 14px; border: 1px solid #63383d; border-radius: var(--radius-md); color: #f5c2be; background: var(--error-soft); font-size: 13px; }
 .auth-footer { position: absolute; inset: auto 24px 22px; z-index: 1; display: flex; justify-content: center; gap: 22px; color: #8998a2; font-size: 11px; }
@@ -1625,13 +1638,13 @@ kbd {
   .auth-ribbon-back { animation: auth-ribbon-drift 16s cubic-bezier(.25, 1, .5, 1) infinite alternate; }
   .auth-ribbon-front { animation: auth-ribbon-flow 11s cubic-bezier(.25, 1, .5, 1) infinite alternate; }
   .auth-ribbon-highlight { animation: auth-highlight-pulse 7s ease-in-out infinite alternate; }
-  .auth-session-spinner { animation: auth-session-spin .8s linear infinite; }
+  .session-gate-status span { animation: session-gate-spin .8s linear infinite; }
 }
 @keyframes auth-orb-breathe { from { transform: scale(.88); opacity: .48; } to { transform: scale(1.08); opacity: .78; } }
 @keyframes auth-ribbon-drift { from { transform: translate3d(-2.5%, 2%, 0) rotate(-1deg) scale(1.02); } to { transform: translate3d(2%, -1.5%, 0) rotate(1.2deg) scale(1.06); } }
 @keyframes auth-ribbon-flow { from { transform: translate3d(1%, -1.5%, 0) rotate(.5deg) scale(.99); } to { transform: translate3d(-1.5%, 2%, 0) rotate(-1deg) scale(1.035); } }
 @keyframes auth-highlight-pulse { from { opacity: .2; transform: translate3d(0, 0, 0); } to { opacity: .52; transform: translate3d(-1%, 1%, 0); } }
-@keyframes auth-session-spin { to { transform: rotate(360deg); } }
+@keyframes session-gate-spin { to { transform: rotate(360deg); } }
 
 @media (max-width: 700px) {
   .auth-motion-field { width: 170%; height: 110%; transform: translateX(-30%); }
