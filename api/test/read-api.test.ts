@@ -364,6 +364,62 @@ test("Roblox OAuth callback rejects a flow started in another browser", async ()
   await app.close();
 });
 
+test("Roblox invitation lookup returns the resolved account and avatar", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("users.roblox.com/v1/usernames/users")) {
+      return new Response(JSON.stringify({
+        data: [{ id: 190970206, name: "skyfloans", displayName: "Sky" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("thumbnails.roblox.com/v1/users/avatar-headshot")) {
+      return new Response(JSON.stringify({
+        data: [{ state: "Completed", imageUrl: "https://example.com/sky.png" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected Roblox URL: ${url}`);
+  };
+
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: null,
+            name: "Owner",
+            robloxUserId: "123",
+            robloxUsername: "owner",
+            robloxDisplayName: "Owner",
+            robloxAvatarUrl: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/manage/roblox-users/skyfloans",
+    headers: { authorization: `Bearer ${"u".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), {
+    id: "190970206",
+    name: "skyfloans",
+    displayName: "Sky",
+    avatarUrl: "https://example.com/sky.png",
+  });
+  await app.close();
+});
+
 test("feedback is returned with player and session attribution", async () => {
   const submittedAt = new Date();
   const pool = {

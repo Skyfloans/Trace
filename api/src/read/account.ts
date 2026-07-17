@@ -40,7 +40,10 @@ type RobloxUserInfo = {
 
 const OAUTH_BASE = "https://apis.roblox.com/oauth/v1";
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
+const ROBLOX_USER_CACHE_MS = 5 * 60 * 1_000;
+const ROBLOX_USER_CACHE_LIMIT = 250;
 const numericId = z.string().regex(/^\d{1,20}$/);
+const robloxUsername = z.string().trim().min(3).max(20).regex(/^[A-Za-z0-9_]+$/);
 const startSchema = z.object({
   intent: z.enum(["login", "claim"]).default("login"),
   universeId: numericId.optional(),
@@ -51,12 +54,22 @@ const callbackSchema = z.object({
   error: z.string().optional(),
 });
 const universeParamsSchema = z.object({ universeId: numericId });
+const robloxUsernameParamsSchema = z.object({ username: robloxUsername });
 const projectParamsSchema = z.object({ projectId: z.uuid() });
 const invitationParamsSchema = projectParamsSchema.extend({ invitationId: z.uuid() });
 const inviteSchema = z.object({
-  username: z.string().trim().min(3).max(20).regex(/^[A-Za-z0-9_]+$/),
+  username: robloxUsername,
   role: z.enum(["admin", "member", "viewer"]).default("viewer"),
 });
+
+type RobloxUserPreview = {
+  id: string;
+  name: string;
+  displayName: string;
+  avatarUrl: string | null;
+};
+
+const robloxUserCache = new Map<string, { expiresAt: number; value: RobloxUserPreview }>();
 
 function hash(value: string): Buffer {
   return createHash("sha256").update(value).digest();
@@ -225,7 +238,11 @@ function cookieSecurity(config: RobloxOAuthConfig) {
   };
 }
 
-async function resolveRobloxUsername(username: string): Promise<{ id: string; name: string }> {
+async function resolveRobloxUsername(username: string): Promise<RobloxUserPreview> {
+  const cacheKey = username.toLowerCase();
+  const cached = robloxUserCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
   const response = await fetch("https://users.roblox.com/v1/usernames/users", {
     method: "POST",
     headers: { Accept: "application/json", "Content-Type": "application/json" },
@@ -235,12 +252,34 @@ async function resolveRobloxUsername(username: string): Promise<{ id: string; na
   if (!response.ok) {
     throw new ReadApiError(502, "roblox_user_lookup_failed", "Roblox user lookup is temporarily unavailable.");
   }
-  const body = (await response.json()) as { data?: Array<{ id?: number; name?: string }> };
+  const body = (await response.json()) as {
+    data?: Array<{ id?: number; name?: string; displayName?: string }>;
+  };
   const user = body.data?.[0];
   if (!user?.id || !user.name) {
     throw new ReadApiError(404, "roblox_user_not_found", "That Roblox username was not found.");
   }
-  return { id: String(user.id), name: user.name };
+
+  const avatarResponse = await fetch(
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${encodeURIComponent(String(user.id))}&size=150x150&format=Png&isCircular=false`,
+    { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
+  ).catch(() => null);
+  const avatarBody = avatarResponse?.ok
+    ? await avatarResponse.json() as { data?: Array<{ state?: string; imageUrl?: string }> }
+    : null;
+  const avatar = avatarBody?.data?.[0];
+  const value = {
+    id: String(user.id),
+    name: user.name,
+    displayName: user.displayName ?? user.name,
+    avatarUrl: avatar?.state === "Completed" ? avatar.imageUrl ?? null : null,
+  };
+  if (robloxUserCache.size >= ROBLOX_USER_CACHE_LIMIT) {
+    const oldestKey = robloxUserCache.keys().next().value;
+    if (oldestKey) robloxUserCache.delete(oldestKey);
+  }
+  robloxUserCache.set(cacheKey, { expiresAt: Date.now() + ROBLOX_USER_CACHE_MS, value });
+  return value;
 }
 
 async function beginTransaction(pool: Pool): Promise<PoolClient> {
@@ -402,6 +441,15 @@ export async function registerAccountRoutes(
       if (!metadata.name) throw new ReadApiError(404, "universe_not_found", "That Roblox universe was not found.");
       const claimed = await pool.query("SELECT 1 FROM projects WHERE roblox_universe_id = $1", [universeId]);
       return { ...metadata, available: claimed.rowCount === 0 };
+    },
+  );
+
+  app.get(
+    "/v1/manage/roblox-users/:username",
+    { preHandler: authenticate },
+    async (request) => {
+      const { username } = robloxUsernameParamsSchema.parse(request.params);
+      return resolveRobloxUsername(username);
     },
   );
 
