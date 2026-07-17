@@ -85,6 +85,7 @@ function randomToken(bytes = 32): string {
 
 function oauthErrorRedirect(config: RobloxOAuthConfig, code: string): string {
   const url = new URL(config.webOrigin);
+  url.pathname = "/";
   url.searchParams.set("oauthError", code);
   return url.toString();
 }
@@ -419,10 +420,12 @@ export async function registerAccountRoutes(
       }
       const destination = new URL(oauth.webOrigin);
       if (flow.intent === "claim") {
+        destination.pathname = "/games";
         destination.searchParams.set("manage", "games");
         destination.searchParams.set("claim", "verified");
         destination.searchParams.set("universeId", flow.universe_id!);
       } else {
+        destination.pathname = "/dashboard";
         destination.searchParams.set("signedIn", "true");
       }
       return reply.redirect(destination.toString());

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
-  ArrowLeft, Check, ChevronDown, ChevronRight, CircleUserRound, Clock3,
+  ArrowLeft, Check, ChevronDown, ChevronRight, CircleAlert, CircleUserRound, Clock3,
   Columns2, Copy, Download, ExternalLink, Gamepad2, KeyRound, LayoutDashboard, ListFilter,
   LogOut, MessageSquareText, RotateCcw, Search, Server, Share2, ShieldCheck,
   TerminalSquare, Trash2, UserPlus, Users, X,
@@ -29,6 +29,14 @@ type Resource<T> = {
 const RESOURCE_CACHE_MS = 30_000
 const RESOURCE_CACHE_LIMIT = 100
 const INGESTION_DOMAIN = 'api.tracestack.gg'
+const NAV_PATHS: Record<NavPage, string> = {
+  overview: '/dashboard',
+  players: '/players',
+  logs: '/logs',
+  feedback: '/feedback',
+  games: '/games',
+  team: '/team',
+}
 const exactNumberFormatter = new Intl.NumberFormat()
 const compactNumberFormatter = new Intl.NumberFormat(undefined, {
   notation: 'compact',
@@ -36,6 +44,41 @@ const compactNumberFormatter = new Intl.NumberFormat(undefined, {
 })
 const resourceCache = new Map<string, { data: unknown; expiresAt: number }>()
 const resourceLoads = new Map<string, Promise<unknown>>()
+
+type PortalRoute = {
+  page: Page
+  activeNav: NavPage
+  fingerprint: string | null
+  sessionId: string | null
+  eventId: string | null
+  jobId: string | null
+}
+
+function decodeRoutePart(value: string): string {
+  try { return decodeURIComponent(value) } catch { return value }
+}
+
+function readPortalRoute(): PortalRoute {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/'
+  const query = new URLSearchParams(window.location.search)
+  const legacyHash = new URLSearchParams(window.location.hash.slice(1))
+  const errorMatch = pathname.match(/^\/errors\/([^/]+)$/)
+  const sessionMatch = pathname.match(/^\/sessions\/([^/]+)$/)
+  const jobMatch = pathname.match(/^\/jobs\/([^/]+)$/)
+  const navEntry = (Object.entries(NAV_PATHS) as Array<[NavPage, string]>).find(([, path]) => path === pathname)
+
+  if (errorMatch) return { page: 'error', activeNav: 'overview', fingerprint: decodeRoutePart(errorMatch[1]), sessionId: null, eventId: null, jobId: null }
+  if (sessionMatch) return { page: 'session', activeNav: 'logs', fingerprint: null, sessionId: decodeRoutePart(sessionMatch[1]), eventId: query.get('event'), jobId: null }
+  if (jobMatch) return { page: 'job', activeNav: 'logs', fingerprint: null, sessionId: null, eventId: query.get('event'), jobId: decodeRoutePart(jobMatch[1]) }
+  if (legacyHash.get('session')) return { page: 'session', activeNav: 'logs', fingerprint: null, sessionId: legacyHash.get('session'), eventId: legacyHash.get('event'), jobId: null }
+  if (navEntry) return { page: navEntry[0], activeNav: navEntry[0], fingerprint: null, sessionId: null, eventId: null, jobId: null }
+  return { page: 'overview', activeNav: 'overview', fingerprint: null, sessionId: null, eventId: null, jobId: null }
+}
+
+function writePortalRoute(path: string, replace = false) {
+  if (`${window.location.pathname}${window.location.search}${window.location.hash}` === path) return
+  window.history[replace ? 'replaceState' : 'pushState'](null, '', path)
+}
 
 function clearClientSessionState() {
   resourceCache.clear()
@@ -143,25 +186,51 @@ function toApiError(reason: unknown) {
 }
 
 function TraceApp() {
-  const sharedState = new URLSearchParams(window.location.hash.slice(1))
-  const initialQuery = new URLSearchParams(window.location.search)
+  const initialQuery = useMemo(() => new URLSearchParams(window.location.search), [])
+  const initialRoute = useMemo(() => readPortalRoute(), [])
+  const oauthError = initialQuery.get('oauthError')
   if (initialQuery.get('signedIn') === 'true') localStorage.removeItem('trace-explicitly-signed-out')
   const explicitlySignedOut = localStorage.getItem('trace-explicitly-signed-out') === 'true'
-  const sharedSessionId = sharedState.get('session')
   const startsOnManage = initialQuery.get('manage') === 'games' || initialQuery.has('claim')
-  const [page, setPage] = useState<Page>(sharedSessionId ? 'session' : startsOnManage ? 'games' : 'overview')
-  const [activeNav, setActiveNav] = useState<NavPage>(sharedSessionId ? 'logs' : startsOnManage ? 'games' : 'overview')
-  const [sessionOrigin, setSessionOrigin] = useState<SessionOrigin>(sharedSessionId ? 'logs' : 'players')
-  const [selectedSessionId, setSelectedSessionId] = useState(sharedSessionId)
-  const [selectedEventId, setSelectedEventId] = useState(sharedState.get('event'))
-  const [selectedFingerprint, setSelectedFingerprint] = useState<string | null>(null)
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null)
+  const [page, setPage] = useState<Page>(startsOnManage ? 'games' : initialRoute.page)
+  const [activeNav, setActiveNav] = useState<NavPage>(startsOnManage ? 'games' : initialRoute.activeNav)
+  const [sessionOrigin, setSessionOrigin] = useState<SessionOrigin>(initialRoute.sessionId ? 'logs' : 'players')
+  const [selectedSessionId, setSelectedSessionId] = useState(initialRoute.sessionId)
+  const [selectedEventId, setSelectedEventId] = useState(initialRoute.eventId)
+  const [selectedFingerprint, setSelectedFingerprint] = useState<string | null>(initialRoute.fingerprint)
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(initialRoute.jobId)
   const [selectedPlayer, setSelectedPlayer] = useState<PlayerSummary | null>(null)
   const [playerSessionPagination, setPlayerSessionPagination] = useState<{ page: number; cursors: Array<string | null> }>({ page: 1, cursors: [null] })
   const [projectMenu, setProjectMenu] = useState(false)
   const [projectId, setProjectId] = useState(() => localStorage.getItem('trace-project-id'))
   const [notice, setNotice] = useState('')
   const noticeTimer = useRef<number | undefined>(undefined)
+
+  useEffect(() => {
+    if (startsOnManage) writePortalRoute('/games', true)
+    else if (initialQuery.has('signedIn')) writePortalRoute('/dashboard', true)
+    else if (oauthError) writePortalRoute('/', true)
+    else if (initialRoute.sessionId && window.location.hash) {
+      const event = initialRoute.eventId ? `?event=${encodeURIComponent(initialRoute.eventId)}` : ''
+      writePortalRoute(`/sessions/${encodeURIComponent(initialRoute.sessionId)}${event}`, true)
+    }
+  }, [initialQuery, initialRoute.eventId, initialRoute.sessionId, oauthError, startsOnManage])
+
+  useEffect(() => {
+    const syncFromHistory = () => {
+      const route = readPortalRoute()
+      setPage(route.page)
+      setActiveNav(route.activeNav)
+      setSelectedFingerprint(route.fingerprint)
+      setSelectedSessionId(route.sessionId)
+      setSelectedEventId(route.eventId)
+      setSelectedJobId(route.jobId)
+      setProjectMenu(false)
+      window.scrollTo({ top: 0, behavior: 'instant' })
+    }
+    window.addEventListener('popstate', syncFromHistory)
+    return () => window.removeEventListener('popstate', syncFromHistory)
+  }, [])
 
   const projectsResource = useResource(
     (signal) => apiGet<{ data: Project[] }>('/v1/projects', signal),
@@ -182,6 +251,7 @@ function TraceApp() {
     if (project) {
       setProjectId(project.id)
       localStorage.setItem('trace-project-id', project.id)
+      if (window.location.pathname === '/') writePortalRoute('/dashboard', true)
       return
     }
     if (!projectsResource.data) return
@@ -189,6 +259,7 @@ function TraceApp() {
     localStorage.removeItem('trace-project-id')
     setPage((current) => current === 'team' ? 'team' : 'games')
     setActiveNav((current) => current === 'team' ? 'team' : 'games')
+    if (!['/games', '/team'].includes(window.location.pathname)) writePortalRoute('/games', true)
   }, [project, projectsResource.data])
 
   const navigate = useCallback((next: NavPage) => {
@@ -196,7 +267,7 @@ function TraceApp() {
     setPage(next)
     setActiveNav(next)
     setProjectMenu(false)
-    window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}`)
+    writePortalRoute(NAV_PATHS[next])
     window.scrollTo({ top: 0, behavior: 'instant' })
     requestAnimationFrame(() => document.querySelector<HTMLElement>('main h1')?.focus())
   }, [hasProject])
@@ -206,6 +277,7 @@ function TraceApp() {
     setSelectedSessionId(sessionId)
     setSelectedEventId(eventId ?? null)
     setPage('session')
+    writePortalRoute(`/sessions/${encodeURIComponent(sessionId)}${eventId ? `?event=${encodeURIComponent(eventId)}` : ''}`)
     window.scrollTo({ top: 0, behavior: 'instant' })
   }
 
@@ -216,6 +288,7 @@ function TraceApp() {
       setSelectedJobId(occurrence.serverJobId)
       setSelectedEventId(occurrence.id)
       setPage('job')
+      writePortalRoute(`/jobs/${encodeURIComponent(occurrence.serverJobId)}?event=${encodeURIComponent(occurrence.id)}`)
       window.scrollTo({ top: 0, behavior: 'instant' })
     }
   }
@@ -223,6 +296,7 @@ function TraceApp() {
   const openError = (fingerprint: string) => {
     setSelectedFingerprint(fingerprint)
     setPage('error')
+    writePortalRoute(`/errors/${encodeURIComponent(fingerprint)}`)
     window.scrollTo({ top: 0, behavior: 'instant' })
   }
 
@@ -231,6 +305,7 @@ function TraceApp() {
     setPlayerSessionPagination({ page: 1, cursors: [null] })
     setPage('player')
     setActiveNav('players')
+    writePortalRoute('/players')
     window.scrollTo({ top: 0, behavior: 'instant' })
     requestAnimationFrame(() => document.querySelector<HTMLElement>('main h1')?.focus())
   }
@@ -254,23 +329,30 @@ function TraceApp() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [hasProject, navigate])
 
-  if (explicitlySignedOut) return <SignIn oauthError={initialQuery.get('oauthError')} />
+  if (explicitlySignedOut) return <SignIn oauthError={oauthError} />
   if (projectsResource.loading && !projectsResource.data) return <AppShell><PageStatus title="Connecting to Trace" copy="Loading your projects and access permissions…" loading /></AppShell>
   if (projectsResource.error) {
     const unauthenticated = projectsResource.error.status === 401
     return unauthenticated
-      ? <SignIn oauthError={initialQuery.get('oauthError')} />
+      ? <SignIn oauthError={oauthError} />
       : <AppShell><PageStatus title="Could not load Trace" copy={apiErrorMessage(projectsResource.error)} action="Try again" onAction={projectsResource.reload} /></AppShell>
   }
   const contextualBack = () => {
     if (sessionOrigin === 'players' && selectedPlayer) {
       setPage('player')
       setActiveNav('players')
+      writePortalRoute('/players')
       window.scrollTo({ top: 0, behavior: 'instant' })
     }
     else if (sessionOrigin === 'players') navigate('players')
-    else if (sessionOrigin === 'error' && selectedFingerprint) setPage('error')
-    else if (sessionOrigin === 'job' && selectedJobId) setPage('job')
+    else if (sessionOrigin === 'error' && selectedFingerprint) {
+      setPage('error')
+      writePortalRoute(`/errors/${encodeURIComponent(selectedFingerprint)}`)
+    }
+    else if (sessionOrigin === 'job' && selectedJobId) {
+      setPage('job')
+      writePortalRoute(`/jobs/${encodeURIComponent(selectedJobId)}`)
+    }
     else if (sessionOrigin === 'feedback') navigate('feedback')
     else navigate('logs')
   }
@@ -347,7 +429,7 @@ function Topbar({ navigate, user, canSearch }: { navigate: (page: NavPage) => vo
       await apiPost<void>('/v1/auth/logout')
     } finally {
       clearClientSessionState()
-      window.location.replace(window.location.pathname)
+      window.location.replace('/')
     }
   }
   return (
@@ -1207,8 +1289,8 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
   }, [events, selected, setSelectedEventId])
 
   useEffect(() => {
-    const suffix = selectedEventId ? `&event=${encodeURIComponent(selectedEventId)}` : ''
-    window.history.replaceState(null, '', `#session=${encodeURIComponent(sessionId)}${suffix}`)
+    const suffix = selectedEventId ? `?event=${encodeURIComponent(selectedEventId)}` : ''
+    writePortalRoute(`/sessions/${encodeURIComponent(sessionId)}${suffix}`, true)
   }, [sessionId, selectedEventId])
 
   const filtered = events.filter((event) => (level === 'all' || event.severity === level) && (!query || `${event.message} ${event.source ?? ''} ${event.stackTrace ?? ''}`.toLowerCase().includes(query.toLowerCase())))
@@ -1232,7 +1314,7 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
     announce('Evidence exported as JSON')
   }
   const shareEvidence = async () => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}#session=${encodeURIComponent(sessionId)}${selected ? `&event=${encodeURIComponent(selected.id)}` : ''}`
+    const shareUrl = `${window.location.origin}/sessions/${encodeURIComponent(sessionId)}${selected ? `?event=${encodeURIComponent(selected.id)}` : ''}`
     try { await navigator.clipboard.writeText(shareUrl); setShareFallback(''); announce('Share link copied to clipboard') } catch { setShareFallback(shareUrl); announce('Copy the share link shown with the selected evidence') }
   }
 
@@ -1261,6 +1343,62 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
 
 function LogPane({ type, events, session, selectedEventId, onSelect }: { type: LogSide; events: LogOccurrence[]; session: Session; selectedEventId: string | null; onSelect: (id: string) => void }) {
   return <section className={`log-pane ${type}`} aria-label={`${type} logs`}><header><span className="pane-icon">{type === 'client' ? <CircleUserRound size={17} /> : <Server size={17} />}</span><div><strong>{type === 'client' ? 'Client logs' : 'Server logs'}</strong><small>{type === 'client' ? `${session.player.username} · ${session.device ?? session.platform ?? 'Unknown device'}` : `${session.serverJob.region ?? 'Unknown region'} · ${shortId(session.serverJob.robloxJobId)}`}</small></div></header><div className="log-lines">{events.length ? events.map((event, index) => <button aria-pressed={selectedEventId === event.id} className={selectedEventId === event.id ? 'selected' : ''} key={event.id} onClick={() => onSelect(event.id)} title={event.source ?? undefined}><span className="line-number">{index + 1}</span><span className="log-time">{formatPreciseTime(event.occurredAt)}</span><span className={`log-level ${event.severity}`}>{event.severity === 'trace' ? '↳' : event.severity}</span><span className="log-text">{event.message}</span></button>) : <div className="log-empty">No {type} events match these filters.</div>}</div></section>
+}
+
+function parseErrorTitle(title: string, fallbackSource: string | null) {
+  const match = title.match(/^(.*?):(\d+):\s*(.+)$/s)
+  return match
+    ? { source: match[1], line: match[2], message: match[3] }
+    : { source: fallbackSource, line: null, message: title }
+}
+
+function ErrorCodeBlock({ error, occurrence }: { error: GroupedError; occurrence: LogOccurrence }) {
+  const parsed = parseErrorTitle(error.title, error.source)
+  return (
+    <section className={`error-console ${error.severity}`} aria-labelledby="error-detail-title">
+      <header>
+        <div><CircleAlert size={16} aria-hidden="true" /><strong>{labelSeverity(error.severity)}</strong><span>{labelSide(error.side)}</span></div>
+        <time dateTime={occurrence.occurredAt}>Latest · {formatDate(occurrence.occurredAt)}</time>
+      </header>
+      <div className="error-console-body">
+        <span className="error-console-mark" aria-hidden="true">!</span>
+        <div>
+          {(parsed.source || parsed.line) && <code className="error-code-location"><span>{parsed.source ?? 'Unknown source'}</span>{parsed.line && <><b>:</b><em>{parsed.line}</em></>}</code>}
+          <h1 id="error-detail-title" tabIndex={-1}>{parsed.message}</h1>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function HighlightedStackLine({ line }: { line: string }) {
+  const match = line.match(/^(.*?)(,\s*line\s+|:)(\d+)(.*)$/)
+  if (!match) return <code><span className="stack-path">{line}</span></code>
+  return <code><span className="stack-path">{match[1]}</span><span className="stack-separator">{match[2]}</span><span className="stack-line-number">{match[3]}</span><span className="stack-tail">{match[4]}</span></code>
+}
+
+function StackTracePanel({ trace }: { trace: string }) {
+  const [copied, setCopied] = useState(false)
+  const lines = trace.trim().split('\n')
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1800)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(trace)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+  return (
+    <section className="stack-panel" aria-labelledby="stack-trace-title">
+      <header><div><h2 id="stack-trace-title">Latest stack trace</h2><p>Most recent retained call site</p></div><button type="button" onClick={() => void copy()}>{copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}{copied ? 'Copied' : 'Copy stack'}</button></header>
+      <ol className="stack-lines">{lines.map((line, index) => <li key={`${index}:${line}`}><HighlightedStackLine line={line} /></li>)}</ol>
+    </section>
+  )
 }
 
 function ErrorDetails({ project, fingerprint, onBack, onOpenOccurrence }: { project: Project; fingerprint: string; onBack: () => void; onOpenOccurrence: (occurrence: LogOccurrence) => void }) {
@@ -1295,13 +1433,13 @@ function ErrorDetails({ project, fingerprint, onBack, onOpenOccurrence }: { proj
   if (!detail.data) return <><BackButton onClick={onBack} label="Back to Dashboard" /><RowsLoading /></>
   const error = detail.data.error
   return (
-    <>
+    <div className="error-detail-page">
       <BackButton onClick={onBack} label="Back to Dashboard" />
-      <PageTitle title={error.title} copy={`${labelSeverity(error.severity)} · ${labelSide(error.side)} · ${error.source ?? 'Unknown source'}`} />
+      <ErrorCodeBlock error={error} occurrence={detail.data.latestOccurrence} />
       <dl className="detail-stats"><div><dt>Occurrences</dt><dd>{error.count}</dd></div><div><dt>Affected players</dt><dd>{error.affectedPlayerCount}</dd></div><div><dt>Server jobs</dt><dd>{error.affectedServerCount}</dd></div><div><dt>First seen</dt><dd>{formatDate(error.firstSeenAt)}</dd></div><div><dt>Last seen</dt><dd>{formatDate(error.lastSeenAt)}</dd></div></dl>
-      {detail.data.latestOccurrence.stackTrace && <section className="stack-panel"><h2>Latest stack trace</h2><pre>{detail.data.latestOccurrence.stackTrace}</pre></section>}
+      {detail.data.latestOccurrence.stackTrace && <StackTracePanel trace={detail.data.latestOccurrence.stackTrace} />}
       <section className="data-section"><div className="section-heading"><div><h2>Occurrences</h2><p>Newest occurrences in the selected retention window · Page {page}</p></div></div>{occurrences.error ? <InlineError error={occurrences.error} retry={occurrences.reload} /> : !occurrences.data ? <RowsLoading /> : occurrences.data.data.length ? <><OccurrenceList occurrences={occurrences.data.data} onOpen={onOpenOccurrence} />{(page > 1 || occurrences.data.nextCursor) && <Pagination page={page} hasNext={Boolean(occurrences.data.nextCursor)} loading={occurrences.loading} onPrevious={previousPage} onNext={nextPage} label="Occurrence pages" />}</> : <PageStatus compact title="No retained occurrences" copy="The grouped error exists, but its raw occurrences have expired." />}</section>
-    </>
+    </div>
   )
 }
 
@@ -1335,7 +1473,7 @@ function ServerJobDetails({ project, jobId, selectedEventId, onBack, onOpenSessi
 }
 
 function OccurrenceList({ occurrences, selectedId, onOpen }: { occurrences: LogOccurrence[]; selectedId?: string | null; onOpen: (occurrence: LogOccurrence) => void }) {
-  return <div className="occurrence-list">{occurrences.map((occurrence) => <button key={occurrence.id} className={selectedId === occurrence.id ? 'selected' : ''} onClick={() => onOpen(occurrence)}><time>{formatDate(occurrence.occurredAt)}</time><SeverityBadge level={occurrence.severity} /><span>{labelSide(occurrence.side)}</span><code>{occurrence.source ?? 'Unknown source'}</code><strong>{occurrence.player ? `@${occurrence.player.username}` : shortId(occurrence.serverJobId)}</strong></button>)}</div>
+  return <div className="occurrence-list"><div className="occurrence-list-header"><span>Occurred</span><span>Level</span><span>Side</span><span>Source</span><span>Player / job</span></div>{occurrences.map((occurrence) => <button key={occurrence.id} className={selectedId === occurrence.id ? 'selected' : ''} onClick={() => onOpen(occurrence)} aria-label={`Open ${labelSeverity(occurrence.severity)} occurrence from ${formatDate(occurrence.occurredAt)}`}><time>{formatDate(occurrence.occurredAt)}</time><SeverityBadge level={occurrence.severity} /><span>{labelSide(occurrence.side)}</span><code>{occurrence.source ?? 'Unknown source'}</code><strong>{occurrence.player ? `@${occurrence.player.username}` : shortId(occurrence.serverJobId)}</strong></button>)}</div>
 }
 
 function Pagination({ page, hasNext, loading, onPrevious, onNext, label }: { page: number; hasNext: boolean; loading: boolean; onPrevious: () => void; onNext: () => void; label: string }) {

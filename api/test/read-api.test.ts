@@ -559,6 +559,7 @@ test("Roblox OAuth callback rejects a flow started in another browser", async ()
 
   assert.equal(response.statusCode, 302);
   assert.match(response.headers.location!, /oauthError=oauth_browser_mismatch/);
+  assert.equal(new URL(response.headers.location!).pathname, "/");
   await app.close();
 });
 
@@ -635,6 +636,7 @@ test("Roblox OAuth stores a headshot when userinfo omits the picture claim", asy
 
   assert.equal(response.statusCode, 302);
   assert.match(response.headers.location!, /signedIn=true/);
+  assert.equal(new URL(response.headers.location!).pathname, "/dashboard");
   assert.equal(storedAvatarUrl, "https://example.com/sky.png");
   await app.close();
 });
