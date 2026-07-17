@@ -330,7 +330,7 @@ function TraceApp() {
   }, [hasProject, navigate])
 
   if (explicitlySignedOut) return <SignIn oauthError={oauthError} />
-  if (projectsResource.loading && !projectsResource.data) return <AppShell><PageStatus title="Connecting to Trace" copy="Loading your projects and access permissions…" loading /></AppShell>
+  if (projectsResource.loading && !projectsResource.data) return <SignIn oauthError={oauthError} loading />
   if (projectsResource.error) {
     const unauthenticated = projectsResource.error.status === 401
     return unauthenticated
@@ -390,7 +390,7 @@ function AppShell({ children }: { children: React.ReactNode }) {
   return <div className="app"><aside className="sidebar"><Brand /></aside><main><div className="content standalone-state">{children}</div></main></div>
 }
 
-function SignIn({ oauthError }: { oauthError: string | null }) {
+function SignIn({ oauthError, loading = false }: { oauthError: string | null; loading?: boolean }) {
   const errorCopy = oauthError
     ? oauthError === 'authorization_cancelled'
       ? 'Roblox sign-in was cancelled. Nothing was changed.'
@@ -436,16 +436,20 @@ function SignIn({ oauthError }: { oauthError: string | null }) {
         </g>
         <path className="auth-ribbon-highlight" d="M1512 -61 C1266 51 1223 214 1008 301 C774 396 559 332 351 452" fill="none" stroke="rgba(255,255,255,.48)" strokeWidth="2" strokeLinecap="round" />
       </svg>
-      <main className="auth-panel" aria-labelledby="sign-in-title">
+      <main className="auth-panel" aria-labelledby="sign-in-title" aria-busy={loading || undefined}>
         <div className="auth-lockup"><img src="/trace-logo.png" alt="" /><h1 id="sign-in-title">trace</h1></div>
         <p className="auth-tagline">Error observability for Roblox developers</p>
         {errorCopy && <div className="auth-error" role="alert">{errorCopy}</div>}
-        <a className="primary-button roblox-sign-in" href={apiUrl('/v1/auth/roblox/start?intent=login')} onClick={() => localStorage.removeItem('trace-explicitly-signed-out')}>
-          <span className="roblox-mark" aria-hidden="true"><i /></span>
-          Continue with Roblox
-          <ChevronRight size={18} aria-hidden="true" />
-        </a>
-        <p className="auth-footnote"><ShieldCheck size={14} aria-hidden="true" />Secure sign-in through Roblox OAuth</p>
+        {loading
+          ? <div className="auth-session-status" role="status"><span className="auth-session-spinner" aria-hidden="true" />Checking your session…</div>
+          : <>
+              <a className="primary-button roblox-sign-in" href={apiUrl('/v1/auth/roblox/start?intent=login')} onClick={() => localStorage.removeItem('trace-explicitly-signed-out')}>
+                <span className="roblox-mark" aria-hidden="true"><i /></span>
+                Continue with Roblox
+                <ChevronRight size={18} aria-hidden="true" />
+              </a>
+              <p className="auth-footnote"><ShieldCheck size={14} aria-hidden="true" />Secure sign-in through Roblox OAuth</p>
+            </>}
       </main>
       <footer className="auth-footer"><span>Trace connects errors, sessions, players, and feedback.</span><span>Your Roblox password is never shared with Trace.</span></footer>
     </div>
