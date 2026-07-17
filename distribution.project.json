@@ -1,0 +1,22 @@
+{
+  "name": "TRACE",
+  "globIgnorePaths": [
+    "src/server/TraceServer/LocalConfig.luau",
+    "src/client/test.client.lua"
+  ],
+  "tree": {
+    "$className": "Folder",
+    "ReplicatedStorage": {
+      "$className": "Folder",
+      "$path": "src/ReplicatedStorage"
+    },
+    "ServerScriptService": {
+      "$className": "Folder",
+      "$path": "src/server"
+    },
+    "StarterPlayerScripts": {
+      "$className": "Folder",
+      "$path": "src/client"
+    }
+  }
+}

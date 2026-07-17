@@ -1,0 +1,36 @@
+{
+	admin off
+	persist_config off
+	auto_https off
+}
+
+{$PORT:3000} {
+	log {
+		format json
+	}
+
+	handle /health {
+		respond "ok" 200
+	}
+
+	handle {
+		root * /app/dist
+		encode zstd gzip
+
+		header {
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		}
+
+		@assets path /assets/*
+		header @assets Cache-Control "public, max-age=31536000, immutable"
+
+		@mutable path / /index.html /Trace.rbxm
+		header @mutable Cache-Control "no-cache"
+
+		try_files {path} /index.html
+		file_server
+	}
+}

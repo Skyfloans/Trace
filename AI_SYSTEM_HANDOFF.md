@@ -60,33 +60,33 @@ The previous BreedAPet Git metadata was moved to:
 ### Frontend portal
 
 ```text
-/Users/dimitriantunes/Trace_Portal
+/Users/dimitriantunes/Trace/portal
 ```
 
-Important warning: this directory is not currently an independent Git
-repository. Running `git rev-parse --show-toplevel` inside it returns:
-
-```text
-/Users/dimitriantunes
-```
-
-Do not run `git add .` from `Trace_Portal` until its repository situation is
-fixed. It could accidentally stage the user's home directory. Create or connect
-a proper frontend repository first.
+The portal now belongs to the main Trace Git repository and deploys as a second
+Railway service with root directory `/portal` and config file path
+`/portal/railway.json`. The former
+`/Users/dimitriantunes/Trace_Portal` directory remains only as a local safety
+copy and is not the canonical deployment source.
 
 Useful frontend documentation:
 
 ```text
-/Users/dimitriantunes/Trace_Portal/READ_API_HANDOFF.md
-/Users/dimitriantunes/Trace_Portal/READ_API_IMPLEMENTATION_HANDOFF.md
-/Users/dimitriantunes/Trace_Portal/DESIGN.md
+/Users/dimitriantunes/Trace/portal/DESIGN.md
+/Users/dimitriantunes/Trace/api/READ_API.md
 ```
 
 ## 3. Production infrastructure
 
 ### API
 
-Railway production URL:
+Public production URL:
+
+```text
+https://api.tracestack.gg
+```
+
+Railway provider URL (retain for deployment diagnostics, not public setup):
 
 ```text
 https://trace-production-c9d4.up.railway.app
@@ -95,7 +95,7 @@ https://trace-production-c9d4.up.railway.app
 Health check:
 
 ```text
-GET https://trace-production-c9d4.up.railway.app/health
+GET https://api.tracestack.gg/health
 ```
 
 Expected body:
@@ -118,21 +118,15 @@ Required Railway variables:
 ```text
 DATABASE_URL=<Neon pooled PostgreSQL connection string with sslmode=require>
 HOST=0.0.0.0
-WEB_ORIGIN=<exact frontend origin without trailing slash>
+WEB_ORIGIN=https://tracestack.gg
+ROBLOX_OAUTH_REDIRECT_URI=https://api.tracestack.gg/v1/auth/roblox/callback
 LOG_LEVEL=info
 ```
 
 Do not manually set `PORT`; Railway supplies it.
 
-At the last check, the deployed frontend origin did not exist and CORS allowed
-only:
-
-```text
-http://localhost:5173
-```
-
-Set `WEB_ORIGIN` to the exact production portal origin when the portal is
-deployed.
+The production CORS origin is the exact portal origin above, without a trailing
+slash. Keep localhost values only in local development environments.
 
 ### Database
 
@@ -170,7 +164,7 @@ first matching job is stored.
 Current uncommitted SDK configuration:
 
 ```text
-Endpoint: https://trace-production-c9d4.up.railway.app
+Endpoint: https://api.tracestack.gg
 Experience secret name: TraceKey
 ```
 
@@ -180,7 +174,7 @@ Never place the value in this document, committed Luau, or a frontend bundle.
 The secret's allowed domain should be:
 
 ```text
-trace-production-c9d4.up.railway.app
+api.tracestack.gg
 ```
 
 Roblox must also have **Allow HTTP Requests** enabled.
@@ -224,11 +218,11 @@ The uncommitted backend work includes:
 The recent backend performance changes are not deployed until they are
 committed and pushed.
 
-The portal has local, uncommitted changes in:
+The portal source is versioned in:
 
 ```text
-Trace_Portal/src/api.ts
-Trace_Portal/src/TraceApp.tsx
+portal/src/api.ts
+portal/src/TraceApp.tsx
 ```
 
 Those changes include:
@@ -638,11 +632,11 @@ already be expired when this document is read; create a new session if needed.
 
 Cross-origin cookie warning: `SameSite=Lax` will not authenticate fetches when
 the portal and API are on unrelated sites such as `vercel.app` and
-`railway.app`. Preferred production setup:
+`railway.app`. Trace uses the same-site production setup:
 
 ```text
-app.your-domain.com
-api.your-domain.com
+tracestack.gg
+api.tracestack.gg
 ```
 
 Otherwise evaluate `SameSite=None; Secure` plus proper CSRF protection.
@@ -652,11 +646,11 @@ Otherwise evaluate `SameSite=None; Secure` plus proper CSRF protection.
 Primary files:
 
 ```text
-Trace_Portal/src/TraceApp.tsx
-Trace_Portal/src/api.ts
-Trace_Portal/src/App.css
-Trace_Portal/src/index.css
-Trace_Portal/vite.config.ts
+portal/src/TraceApp.tsx
+portal/src/api.ts
+portal/src/App.css
+portal/src/index.css
+portal/vite.config.ts
 ```
 
 Stack:
@@ -685,7 +679,7 @@ opened only when investigating a group/session/job.
 Local development:
 
 ```sh
-cd /Users/dimitriantunes/Trace_Portal
+cd /Users/dimitriantunes/Trace/portal
 npm install
 npm run dev
 ```
@@ -880,7 +874,7 @@ npm run build
 ### Portal verification
 
 ```sh
-cd /Users/dimitriantunes/Trace_Portal
+cd /Users/dimitriantunes/Trace/portal
 npm install
 npm run build
 npm run lint
@@ -936,11 +930,13 @@ dist/
    - player list without a query
    - batch headshots
    - dashboard/error latency
-5. Fix `Trace_Portal` repository ownership before committing frontend files.
-6. Deploy the frontend and update:
-   - frontend API base URL
-   - Railway `WEB_ORIGIN`
-   - production cookie/auth domain strategy
+5. Deploy `portal/` as a second Railway service with root directory `/portal`
+   and config file path `/portal/railway.json`.
+6. Attach `https://tracestack.gg` to the portal service and confirm:
+   - frontend API base URL is `https://api.tracestack.gg`
+   - Railway `WEB_ORIGIN` is `https://tracestack.gg`
+   - Railway `ROBLOX_OAUTH_REDIRECT_URI` is
+     `https://api.tracestack.gg/v1/auth/roblox/callback`
 7. Implement proper production login/session issuance/logout.
 8. Apply migration 005 before deploying the second optimization pass.
 9. Verify 60-second repeat aggregation and five-minute heartbeats against live
@@ -957,9 +953,7 @@ assumptions:
 ```text
 api/README.md
 api/READ_API.md
-Trace_Portal/READ_API_HANDOFF.md
-Trace_Portal/READ_API_IMPLEMENTATION_HANDOFF.md
-Trace_Portal/DESIGN.md
+portal/DESIGN.md
 ```
 
 When documentation and current code differ, verify current code and update the

@@ -21,28 +21,35 @@ ingestion API key.
 
 ## Roblox account sign-in and game ownership
 
-Trace uses Roblox OAuth 2.0 authorization code flow with PKCE. Normal sign-in
-requests only `openid profile`. Linking a game starts a separate authorization
-request for the read-only `universe:read` scope, and the callback verifies that
-Roblox granted the exact universe before Trace allows it to be claimed.
+Trace uses the Roblox OAuth 2.0 authorization code flow with PKCE. Production
+sign-in requests only `openid profile`. Game linking does not require an OAuth
+resource scope; the first authenticated telemetry batch verifies that its
+universe matches the linked project.
 
 Configure the OAuth app with:
 
 ```text
 Identity scopes: openid, profile
-Resource scope: universe:read
 Local redirect: http://localhost:5173/api/v1/auth/roblox/callback
-Production redirect: https://<portal-domain>/api/v1/auth/roblox/callback
+Production redirect: https://api.tracestack.gg/v1/auth/roblox/callback
 ```
 
-The callback should be routed through the portal's same-origin `/api` proxy so
-the HttpOnly `trace_session` cookie belongs to the portal site. Keep the OAuth
-client secret only in the API environment:
+Production uses `tracestack.gg` for the portal and `api.tracestack.gg` for this
+API. Because both hosts share the same registrable domain, the secure
+`SameSite=Lax` session cookie remains same-site while the API keeps a strict
+CORS origin. Keep the OAuth client secret only in the API environment:
 
 ```text
 ROBLOX_OAUTH_CLIENT_ID=...
 ROBLOX_OAUTH_CLIENT_SECRET=...
 ROBLOX_OAUTH_REDIRECT_URI=...
+```
+
+The production values are:
+
+```text
+WEB_ORIGIN=https://tracestack.gg
+ROBLOX_OAUTH_REDIRECT_URI=https://api.tracestack.gg/v1/auth/roblox/callback
 ```
 
 Roblox user IDs—not mutable usernames—are the account and invitation identity.
@@ -165,13 +172,23 @@ local endpoint and development key. This file is gitignored.
 
 Before publishing:
 
-1. Deploy the ingestion API over HTTPS.
-2. Change `Endpoint` in `src/server/TraceServer/Config.luau`.
+1. Deploy the ingestion API over HTTPS at `https://api.tracestack.gg`.
+2. Confirm `Endpoint` in `src/server/TraceServer/Config.luau` uses that origin.
 3. Add the ingestion key to the Roblox experience Secrets Store with the name
    `TraceKey`.
-4. Enable **Allow HTTP Requests** in Experience Settings > Security.
+4. Restrict the secret's allowed domain to `api.tracestack.gg`.
+5. Enable **Allow HTTP Requests** in Experience Settings > Security.
 
 The committed configuration never contains the production ingestion key.
+
+Build the public Studio download from the production-only project manifest:
+
+```sh
+rojo build distribution.project.json -o Trace.rbxm
+```
+
+Do not build the public model from `default.project.json`; the development
+project can see ignored Studio-only files such as `LocalConfig.luau`.
 
 `Config.luau` exposes the main per-game cost controls:
 

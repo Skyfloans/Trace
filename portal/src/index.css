@@ -1,0 +1,23 @@
+:root {
+  font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: #121a23;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100%;
+  background: #121a23;
+}
+
+button, input { font-family: inherit; }
+button:focus-visible, input:focus-visible {
+  outline: 2px solid #6297ff;
+  outline-offset: 2px;
+}

@@ -1,7 +1,7 @@
 local RunService = game:GetService("RunService")
 
 local Config = {
-	Endpoint = "https://trace-production-c9d4.up.railway.app",
+	Endpoint = "https://api.tracestack.gg",
 
 	IngestionSecretName = "TraceKey",
 
