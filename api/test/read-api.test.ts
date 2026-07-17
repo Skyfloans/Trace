@@ -282,6 +282,88 @@ test("activity queries combine raw occurrences with hourly rollups", async () =>
   await app.close();
 });
 
+test("Roblox OAuth reports when deployment credentials are not configured", async () => {
+  const pool = { query: async () => ({ rows: [], rowCount: 0 }) } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({ method: "GET", url: "/v1/auth/roblox/start" });
+
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error.code, "oauth_not_configured");
+  await app.close();
+});
+
+test("claim verification requires an authenticated Trace account", async () => {
+  const pool = { query: async () => ({ rows: [], rowCount: 0 }) } as unknown as Pool;
+  const app = await buildApp(pool, "http://localhost:5173", {
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    redirectUri: "http://localhost:3000/v1/auth/roblox/callback",
+  });
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/auth/roblox/start?intent=claim&universeId=123",
+  });
+
+  assert.equal(response.statusCode, 401);
+  assert.equal(response.json().error.code, "claim_sign_in_required");
+  await app.close();
+});
+
+test("Roblox OAuth start binds PKCE state to an HttpOnly browser cookie", async () => {
+  const queries: string[] = [];
+  const pool = {
+    query: async (sql: string) => {
+      queries.push(sql);
+      return { rows: [], rowCount: 0 };
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool, "http://localhost:5173", {
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    redirectUri: "http://localhost:5173/api/v1/auth/roblox/callback",
+  });
+  const response = await app.inject({ method: "GET", url: "/v1/auth/roblox/start" });
+
+  assert.equal(response.statusCode, 302);
+  assert.match(response.headers.location!, /^https:\/\/apis\.roblox\.com\/oauth\/v1\/authorize\?/);
+  assert.match(String(response.headers["set-cookie"]), /trace_oauth_binding=.*HttpOnly/);
+  assert.equal(queries.some((sql) => sql.includes("browser_binding_hash")), true);
+  await app.close();
+});
+
+test("Roblox OAuth callback rejects a flow started in another browser", async () => {
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("DELETE FROM roblox_oauth_flows")) {
+        return {
+          rows: [{
+            browser_binding_hash: Buffer.alloc(32, 1),
+            user_id: null,
+            intent: "login",
+            universe_id: null,
+            code_verifier: "v".repeat(48),
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool, "http://localhost:5173", {
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    redirectUri: "http://localhost:5173/api/v1/auth/roblox/callback",
+  });
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/auth/roblox/callback?code=test-code&state=${"s".repeat(40)}`,
+  });
+
+  assert.equal(response.statusCode, 302);
+  assert.match(response.headers.location!, /oauthError=oauth_browser_mismatch/);
+  await app.close();
+});
+
 test("feedback is returned with player and session attribution", async () => {
   const submittedAt = new Date();
   const pool = {

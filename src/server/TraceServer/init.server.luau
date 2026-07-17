@@ -158,7 +158,8 @@ end)
 submitFeedbackRemote.OnServerEvent:Connect(function(player, message)
 	if closing or typeof(message) ~= "string" then return end
 	local normalized = string.gsub(message, "^%s*(.-)%s*$", "%1")
-	if #normalized < 8 or #normalized > 500 then return end
+	local characterCount = utf8.len(normalized)
+	if not characterCount or characterCount < 8 or characterCount > 221 then return end
 	local session = getSession(player)
 	batcher:AddFeedback({
 		id = HttpService:GenerateGUID(false),

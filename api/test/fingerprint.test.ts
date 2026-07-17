@@ -41,6 +41,31 @@ function makeBatch(playerName: string) {
   });
 }
 
+test("feedback is capped at 221 characters", () => {
+  const batch = makeBatch("skyfloans");
+  const sessionId = batch.sessions[0]!.id;
+  const valid = ingestBatchSchema.safeParse({
+    ...batch,
+    feedback: [{
+      id: "50000000-0000-4000-8000-000000000001",
+      sessionId,
+      submittedAt: batch.job.startedAt,
+      message: "x".repeat(221),
+    }],
+  });
+  const tooLong = ingestBatchSchema.safeParse({
+    ...batch,
+    feedback: [{
+      id: "50000000-0000-4000-8000-000000000002",
+      sessionId,
+      submittedAt: batch.job.startedAt,
+      message: "x".repeat(222),
+    }],
+  });
+  assert.equal(valid.success, true);
+  assert.equal(tooLong.success, false);
+});
+
 test("player names do not create distinct fingerprints", () => {
   const firstBatch = makeBatch("Skyfloans");
   const secondBatch = makeBatch("AnotherPlayer");

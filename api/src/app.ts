@@ -13,6 +13,7 @@ import { ingestBatchSchema } from "./schema.js";
 import { findProjectForApiKey, ingestBatch } from "./repository.js";
 import { ReadApiError } from "./read/http.js";
 import { registerReadApi } from "./read/index.js";
+import type { RobloxOAuthConfig } from "./read/account.js";
 
 const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1_000;
 const MAX_FUTURE_SKEW_MS = 10 * 60 * 1_000;
@@ -65,6 +66,7 @@ function validateEventTimes(occurredAtValues: string[]): string | null {
 export async function buildApp(
   pool: Pool,
   webOrigin = "http://localhost:5173",
+  oauth: Omit<RobloxOAuthConfig, "webOrigin"> | null = null,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: true,
@@ -82,7 +84,7 @@ export async function buildApp(
   await app.register(cors, {
     origin: webOrigin,
     credentials: true,
-    methods: ["GET", "POST", "OPTIONS"],
+    methods: ["GET", "POST", "DELETE", "OPTIONS"],
   });
 
   await app.register(rateLimit, {
@@ -197,7 +199,7 @@ export async function buildApp(
     },
   );
 
-  await registerReadApi(app, pool);
+  await registerReadApi(app, pool, oauth ? { ...oauth, webOrigin } : null);
 
   return app;
 }

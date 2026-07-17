@@ -9,7 +9,7 @@ CREATE TABLE feedback (
     player_id BIGINT NOT NULL,
     submitted_at TIMESTAMPTZ NOT NULL,
     message TEXT NOT NULL,
-    CHECK (char_length(message) BETWEEN 8 AND 500)
+    CHECK (char_length(message) BETWEEN 8 AND 221)
 );
 
 CREATE INDEX feedback_project_time_idx

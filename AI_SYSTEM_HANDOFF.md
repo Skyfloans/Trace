@@ -146,19 +146,17 @@ database/migrations/001_initial_schema.sql
 database/migrations/002_ingestion_api.sql
 database/migrations/003_read_api.sql
 database/migrations/004_compact_occurrences.sql
-```
-
-Pending and not yet applied to production:
-
-```text
 database/migrations/005_tiered_retention.sql
+database/migrations/006_feedback.sql
+database/migrations/007_feedback_length.sql
+database/migrations/008_roblox_oauth_and_project_management.sql
 ```
 
 Apply them once, in order, to a new database. They are normal sequential
 migrations, not repeatedly idempotent setup scripts.
 
-Neon Auth was not used. Trace currently owns its `users`,
-`project_memberships`, and `web_sessions` tables.
+Neon Auth is not used. Trace owns its `users`, `project_memberships`,
+`web_sessions`, Roblox OAuth flow, universe claim, and invitation tables.
 
 ### Roblox live configuration
 

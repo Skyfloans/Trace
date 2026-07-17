@@ -46,7 +46,7 @@ async function robloxJson<T>(url: string): Promise<T | null> {
   }
 }
 
-async function getGameMetadata(universeId: string): Promise<GameMetadata> {
+export async function getGameMetadata(universeId: string): Promise<GameMetadata> {
   const cached = gameCache.get(universeId);
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 

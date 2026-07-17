@@ -5,8 +5,12 @@ import { ReadApiError } from "./http.js";
 
 export type ReadUser = {
   id: string;
-  email: string;
+  email: string | null;
   name: string | null;
+  robloxUserId: string | null;
+  robloxUsername: string | null;
+  robloxDisplayName: string | null;
+  robloxAvatarUrl: string | null;
 };
 
 type CachedValue<T> = {
@@ -54,7 +58,11 @@ async function loadReadUser(
 
   const load = pool
     .query<ReadUser>(
-      `SELECT u.id, u.email, u.name
+      `SELECT u.id, u.email, u.name,
+              u.roblox_user_id AS "robloxUserId",
+              u.roblox_username AS "robloxUsername",
+              u.roblox_display_name AS "robloxDisplayName",
+              u.roblox_avatar_url AS "robloxAvatarUrl"
        FROM web_sessions ws
        JOIN users u ON u.id = ws.user_id
        WHERE ws.token_hash = $1
@@ -87,6 +95,16 @@ function readSessionToken(request: FastifyRequest): string | null {
 
   const token = request.cookies.trace_session;
   return token && token.length >= 32 ? token : null;
+}
+
+export async function findReadUserForRequest(
+  pool: Pool,
+  request: FastifyRequest,
+): Promise<ReadUser | null> {
+  const token = readSessionToken(request);
+  if (!token) return null;
+  const tokenHash = createHash("sha256").update(token).digest();
+  return loadReadUser(pool, tokenHash, tokenHash.toString("hex"));
 }
 
 export function createReadAuthenticator(pool: Pool) {
@@ -171,4 +189,28 @@ export async function requireProjectMembership(
 
   cache.memberships.set(cacheKey, Date.now() + AUTH_CACHE_MS);
   return user;
+}
+
+export async function requireProjectRole(
+  pool: Pool,
+  request: FastifyRequest,
+  projectId: string,
+  allowedRoles: Array<"owner" | "admin" | "member" | "viewer">,
+): Promise<{ user: ReadUser; role: "owner" | "admin" | "member" | "viewer" }> {
+  const user = requireReadUser(request);
+  const result = await pool.query<{ role: "owner" | "admin" | "member" | "viewer" }>(
+    `SELECT role
+     FROM project_memberships
+     WHERE user_id = $1 AND project_id = $2`,
+    [user.id, projectId],
+  );
+  const role = result.rows[0]?.role;
+  if (!role || !allowedRoles.includes(role)) {
+    throw new ReadApiError(
+      403,
+      "project_role_forbidden",
+      "Your project role does not allow this action.",
+    );
+  }
+  return { user, role };
 }

@@ -3,7 +3,17 @@ import { config } from "./config.js";
 import { createPool } from "./db.js";
 
 const pool = createPool(config.DATABASE_URL);
-const app = await buildApp(pool, config.WEB_ORIGIN);
+const oauth =
+  config.ROBLOX_OAUTH_CLIENT_ID &&
+  config.ROBLOX_OAUTH_CLIENT_SECRET &&
+  config.ROBLOX_OAUTH_REDIRECT_URI
+    ? {
+        clientId: config.ROBLOX_OAUTH_CLIENT_ID,
+        clientSecret: config.ROBLOX_OAUTH_CLIENT_SECRET,
+        redirectUri: config.ROBLOX_OAUTH_REDIRECT_URI,
+      }
+    : null;
+const app = await buildApp(pool, config.WEB_ORIGIN, oauth);
 let maintenanceTimer: NodeJS.Timeout | undefined;
 
 async function runMaintenance(): Promise<void> {

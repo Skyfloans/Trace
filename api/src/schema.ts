@@ -58,7 +58,7 @@ const feedbackSchema = z
     id: z.uuid(),
     sessionId: z.uuid(),
     submittedAt: timestamp,
-    message: z.string().trim().min(8).max(500),
+    message: z.string().trim().min(8).max(221),
   })
   .strict();
 

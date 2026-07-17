@@ -19,6 +19,38 @@ npm run dev
 The local configuration is read from `api/.env`. Never commit that file or an
 ingestion API key.
 
+## Roblox account sign-in and game ownership
+
+Trace uses Roblox OAuth 2.0 authorization code flow with PKCE. Normal sign-in
+requests only `openid profile`. Linking a game starts a separate authorization
+request for the read-only `universe:read` scope, and the callback verifies that
+Roblox granted the exact universe before Trace allows it to be claimed.
+
+Configure the OAuth app with:
+
+```text
+Identity scopes: openid, profile
+Resource scope: universe:read
+Local redirect: http://localhost:5173/api/v1/auth/roblox/callback
+Production redirect: https://<portal-domain>/api/v1/auth/roblox/callback
+```
+
+The callback should be routed through the portal's same-origin `/api` proxy so
+the HttpOnly `trace_session` cookie belongs to the portal site. Keep the OAuth
+client secret only in the API environment:
+
+```text
+ROBLOX_OAUTH_CLIENT_ID=...
+ROBLOX_OAUTH_CLIENT_SECRET=...
+ROBLOX_OAUTH_REDIRECT_URI=...
+```
+
+Roblox user IDs—not mutable usernames—are the account and invitation identity.
+Each universe can belong to only one Trace project. Its owner may invite other
+Roblox users as administrators, members, or viewers. Ingestion keys are stored
+only as SHA-256 hashes and the plaintext value is returned once on creation or
+rotation.
+
 ## Endpoint
 
 `POST /v1/batches`
@@ -136,7 +168,7 @@ Before publishing:
 1. Deploy the ingestion API over HTTPS.
 2. Change `Endpoint` in `src/server/TraceServer/Config.luau`.
 3. Add the ingestion key to the Roblox experience Secrets Store with the name
-   `TRACE_INGEST_KEY`.
+   `TraceKey`.
 4. Enable **Allow HTTP Requests** in Experience Settings > Security.
 
 The committed configuration never contains the production ingestion key.

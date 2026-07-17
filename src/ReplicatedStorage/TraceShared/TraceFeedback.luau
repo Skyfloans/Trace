@@ -10,8 +10,10 @@ local SubmitFeedback = script.Parent:WaitForChild("SubmitFeedback") :: RemoteEve
 
 local hasSubmitted = false
 local MINIMUM_WORDS = 3
-local MAXIMUM_CHARACTERS = 500
+local MAXIMUM_CHARACTERS = 221
 local FADE_INFO = TweenInfo.new(0.18, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+local DISABLED_BACKGROUND_TRANSPARENCY = 0.35
+local DISABLED_TEXT_TRANSPARENCY = 0.3
 
 local function hasEnoughWords(text: string): boolean
 	local count = 0
@@ -20,6 +22,15 @@ local function hasEnoughWords(text: string): boolean
 		if count >= MINIMUM_WORDS then return true end
 	end
 	return false
+end
+
+local function truncateToCharacterLimit(text: string): string
+	local characterCount = utf8.len(text)
+	if not characterCount then return string.sub(text, 1, MAXIMUM_CHARACTERS) end
+	if characterCount <= MAXIMUM_CHARACTERS then return text end
+
+	local nextCharacter = utf8.offset(text, MAXIMUM_CHARACTERS + 1)
+	return if nextCharacter then string.sub(text, 1, nextCharacter - 1) else text
 end
 
 local function closeModal()
@@ -33,6 +44,7 @@ local function initializeModal(UI: ScreenGui)
 	local limit = UI:WaitForChild("Limit") :: Frame
 	local inputBox = holder:WaitForChild("InputBox") :: TextBox
 	local submitButton = holder:WaitForChild("SubmitButton") :: TextButton
+	local submitText = submitButton:WaitForChild("SubmitText") :: TextLabel
 	local darken = holder:WaitForChild("Darken") :: Frame
 	local darkenGradient = darken:WaitForChild("UIGradient") :: UIGradient
 
@@ -41,31 +53,31 @@ local function initializeModal(UI: ScreenGui)
 	inputBox.MultiLine = true
 	inputBox.ClearTextOnFocus = false
 	inputBox.TextEditable = true
+	inputBox.MaxVisibleGraphemes = MAXIMUM_CHARACTERS
 
 	local canSubmit = false
 	local introComplete = false
 	local function updateSubmitState()
-		if #inputBox.Text > MAXIMUM_CHARACTERS then inputBox.Text = string.sub(inputBox.Text, 1, MAXIMUM_CHARACTERS) end
+		local limitedText = truncateToCharacterLimit(inputBox.Text)
+		if limitedText ~= inputBox.Text then inputBox.Text = limitedText end
 		canSubmit = introComplete and hasEnoughWords(inputBox.Text)
-		darken.Visible = true
-		darken.Active = not canSubmit
-		darken.Interactable = not canSubmit
-		local stateTween = TweenService:Create(darken, FADE_INFO, {
-			BackgroundTransparency = if canSubmit then 1 else 0.55,
-		})
-		stateTween.Completed:Connect(function()
-			if canSubmit then darken.Visible = false end
-		end)
-		stateTween:Play()
+		submitButton.Active = canSubmit
+		submitButton.Interactable = canSubmit
+		TweenService:Create(submitButton, FADE_INFO, {
+			BackgroundTransparency = if canSubmit then 0 else DISABLED_BACKGROUND_TRANSPARENCY,
+		}):Play()
+		TweenService:Create(submitText, FADE_INFO, {
+			TextTransparency = if canSubmit then 0 else DISABLED_TEXT_TRANSPARENCY,
+		}):Play()
 	end
 
 	inputBox:GetPropertyChangedSignal("Text"):Connect(updateSubmitState)
 	updateSubmitState()
 	darkenGradient.Transparency = NumberSequence.new({
-		NumberSequenceKeypoint.new(0, 0),
-		NumberSequenceKeypoint.new(0.45, 0),
-		NumberSequenceKeypoint.new(0.55, 1),
-		NumberSequenceKeypoint.new(1, 1),
+		NumberSequenceKeypoint.new(0, 1),
+		NumberSequenceKeypoint.new(0.45, 1),
+		NumberSequenceKeypoint.new(0.55, 0),
+		NumberSequenceKeypoint.new(1, 0),
 	})
 	darkenGradient.Offset = Vector2.new(-1, 0)
 	local revealTween = TweenService:Create(
@@ -75,7 +87,7 @@ local function initializeModal(UI: ScreenGui)
 	)
 	revealTween.Completed:Connect(function()
 		introComplete = true
-		darkenGradient.Transparency = NumberSequence.new(0)
+		darken.Visible = false
 		updateSubmitState()
 	end)
 	revealTween:Play()
