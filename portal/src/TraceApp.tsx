@@ -398,10 +398,43 @@ function SignIn({ oauthError }: { oauthError: string | null }) {
     : null
   return (
     <div className="auth-layout">
-      <svg className="auth-signal-lines" viewBox="0 0 1440 520" preserveAspectRatio="none" aria-hidden="true">
-        <path d="M-40 400 C 180 390, 260 300, 450 314 S 710 150, 920 232 S 1190 168, 1480 92" />
-        <path d="M-40 452 C 190 438, 300 350, 500 365 S 760 244, 960 290 S 1210 226, 1480 192" />
-        <path d="M-40 332 C 180 340, 300 274, 470 284 S 720 214, 930 220 S 1210 122, 1480 138" />
+      <svg className="auth-motion-field" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+        <defs>
+          <linearGradient id="auth-ribbon-coral" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#ffae73" />
+            <stop offset=".45" stopColor="#ef6d71" />
+            <stop offset="1" stopColor="#a84ee8" />
+          </linearGradient>
+          <linearGradient id="auth-ribbon-blue" x1="0" y1="1" x2="1" y2="0">
+            <stop offset="0" stopColor="#2868ff" />
+            <stop offset=".52" stopColor="#58c9dc" />
+            <stop offset="1" stopColor="#9a5cff" />
+          </linearGradient>
+          <radialGradient id="auth-orb" cx="50%" cy="50%" r="50%">
+            <stop offset="0" stopColor="#ff8a73" stopOpacity=".8" />
+            <stop offset=".45" stopColor="#8b5cf6" stopOpacity=".38" />
+            <stop offset="1" stopColor="#172c49" stopOpacity="0" />
+          </radialGradient>
+          <filter id="auth-soften" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="32" />
+          </filter>
+          <filter id="auth-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="10" result="blur" />
+            <feColorMatrix in="blur" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 .72 0" result="glow" />
+            <feMerge>
+              <feMergeNode in="glow" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
+        </defs>
+        <circle className="auth-motion-orb" cx="1105" cy="194" r="330" fill="url(#auth-orb)" />
+        <g className="auth-ribbon auth-ribbon-back" filter="url(#auth-soften)">
+          <path d="M1510 -130 C1220 22 1174 282 936 363 C704 443 438 311 202 498 C48 620 -72 710 -186 717" fill="none" stroke="url(#auth-ribbon-blue)" strokeWidth="154" strokeLinecap="round" />
+        </g>
+        <g className="auth-ribbon auth-ribbon-front" filter="url(#auth-glow)">
+          <path d="M1542 -72 C1268 36 1225 235 1002 326 C757 426 526 344 312 480 C121 601 -17 699 -184 686" fill="none" stroke="url(#auth-ribbon-coral)" strokeWidth="92" strokeLinecap="round" />
+        </g>
+        <path className="auth-ribbon-highlight" d="M1512 -61 C1266 51 1223 214 1008 301 C774 396 559 332 351 452" fill="none" stroke="rgba(255,255,255,.48)" strokeWidth="2" strokeLinecap="round" />
       </svg>
       <main className="auth-panel" aria-labelledby="sign-in-title">
         <div className="auth-lockup"><img src="/trace-logo.png" alt="" /><h1 id="sign-in-title">trace</h1></div>
