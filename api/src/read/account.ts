@@ -58,6 +58,7 @@ const universeParamsSchema = z.object({ universeId: numericId });
 const robloxUsernameParamsSchema = z.object({ username: robloxUsername });
 const projectParamsSchema = z.object({ projectId: z.uuid() });
 const invitationParamsSchema = projectParamsSchema.extend({ invitationId: z.uuid() });
+const recipientInvitationParamsSchema = z.object({ invitationId: z.uuid() });
 const inviteSchema = z.object({
   username: robloxUsername,
   role: z.enum(["admin", "member", "viewer"]).default("viewer"),
@@ -209,23 +210,6 @@ async function upsertRobloxUser(
     [profile.sub, username, displayName, profile.picture ?? null],
   );
   return result.rows[0]!.id;
-}
-
-async function acceptPendingInvitations(pool: Pool, userId: string, robloxUserId: string): Promise<void> {
-  await pool.query(
-    `WITH accepted AS (
-       UPDATE project_invitations
-       SET accepted_at = now(), accepted_by = $1
-       WHERE roblox_user_id = $2
-         AND accepted_at IS NULL
-         AND revoked_at IS NULL
-       RETURNING project_id, role
-     )
-     INSERT INTO project_memberships (user_id, project_id, role)
-     SELECT $1, project_id, role FROM accepted
-     ON CONFLICT (user_id, project_id) DO NOTHING`,
-    [userId, robloxUserId],
-  );
 }
 
 async function createWebSession(pool: Pool, userId: string): Promise<string> {
@@ -403,7 +387,6 @@ export async function registerAccountRoutes(
           (await getRobloxAvatarUrl(oauthProfile.sub)),
       };
       const userId = await upsertRobloxUser(pool, flow.user_id, profile);
-      await acceptPendingInvitations(pool, userId, profile.sub);
 
       if (flow.intent === "claim") {
         if (!flow.user_id || userId !== flow.user_id || !flow.universe_id) {
@@ -468,6 +451,113 @@ export async function registerAccountRoutes(
     });
     return reply.code(204).send();
   });
+
+  app.get("/v1/invitations", { preHandler: authenticate }, async (request, reply) => {
+    const user = requireReadUser(request);
+    reply.header("Cache-Control", "private, no-store");
+    if (!user.robloxUserId) return { data: [] };
+
+    const result = await pool.query(
+      `SELECT inv.id, inv.role, inv.created_at,
+              p.id AS project_id, p.name AS project_name,
+              p.roblox_universe_id, p.icon_url,
+              inviter.roblox_username AS inviter_username,
+              inviter.roblox_display_name AS inviter_display_name
+       FROM project_invitations inv
+       JOIN projects p ON p.id = inv.project_id
+       LEFT JOIN users inviter ON inviter.id = inv.invited_by
+       WHERE inv.roblox_user_id = $1
+         AND inv.accepted_at IS NULL
+         AND inv.revoked_at IS NULL
+       ORDER BY inv.created_at DESC, inv.id DESC`,
+      [user.robloxUserId],
+    );
+
+    return {
+      data: result.rows.map((row) => ({
+        id: row.id,
+        role: row.role,
+        createdAt: new Date(row.created_at).toISOString(),
+        project: {
+          id: row.project_id,
+          name: row.project_name,
+          robloxUniverseId: row.roblox_universe_id,
+          iconUrl: row.icon_url,
+        },
+        invitedBy: {
+          username: row.inviter_username,
+          displayName: row.inviter_display_name,
+        },
+      })),
+    };
+  });
+
+  app.post(
+    "/v1/invitations/:invitationId/accept",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const user = requireReadUser(request);
+      const { invitationId } = recipientInvitationParamsSchema.parse(request.params);
+      if (!user.robloxUserId) {
+        throw new ReadApiError(403, "roblox_account_required", "Connect a Roblox account before responding to invitations.");
+      }
+
+      const client = await beginTransaction(pool);
+      try {
+        const invitation = await client.query<{ project_id: string; role: "admin" | "member" | "viewer" }>(
+          `UPDATE project_invitations
+           SET accepted_at = now(), accepted_by = $1
+           WHERE id = $2
+             AND roblox_user_id = $3
+             AND accepted_at IS NULL
+             AND revoked_at IS NULL
+           RETURNING project_id, role`,
+          [user.id, invitationId, user.robloxUserId],
+        );
+        const accepted = invitation.rows[0];
+        if (!accepted) {
+          throw new ReadApiError(404, "invitation_not_found", "The pending invitation was not found.");
+        }
+        await client.query(
+          `INSERT INTO project_memberships (user_id, project_id, role)
+           VALUES ($1, $2, $3)
+           ON CONFLICT (user_id, project_id) DO NOTHING`,
+          [user.id, accepted.project_id, accepted.role],
+        );
+        await client.query("COMMIT");
+        return reply.code(204).send();
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  app.post(
+    "/v1/invitations/:invitationId/decline",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const user = requireReadUser(request);
+      const { invitationId } = recipientInvitationParamsSchema.parse(request.params);
+      if (!user.robloxUserId) {
+        throw new ReadApiError(403, "roblox_account_required", "Connect a Roblox account before responding to invitations.");
+      }
+      const result = await pool.query(
+        `UPDATE project_invitations
+         SET revoked_at = now()
+         WHERE id = $1
+           AND roblox_user_id = $2
+           AND accepted_at IS NULL
+           AND revoked_at IS NULL
+         RETURNING id`,
+        [invitationId, user.robloxUserId],
+      );
+      if (!result.rowCount) throw new ReadApiError(404, "invitation_not_found", "The pending invitation was not found.");
+      return reply.code(204).send();
+    },
+  );
 
   app.get(
     "/v1/manage/universes/:universeId",
@@ -657,22 +747,6 @@ export async function registerAccountRoutes(
            RETURNING id`,
           [projectId, user.id, robloxUser.id, robloxUser.name, input.role],
         );
-        const existingUser = await pool.query<{ id: string }>(
-          "SELECT id FROM users WHERE roblox_user_id = $1",
-          [robloxUser.id],
-        );
-        if (existingUser.rows[0]) {
-          await pool.query(
-            `INSERT INTO project_memberships (user_id, project_id, role)
-             VALUES ($1, $2, $3)
-             ON CONFLICT (user_id, project_id) DO NOTHING`,
-            [existingUser.rows[0].id, projectId, input.role],
-          );
-          await pool.query(
-            "UPDATE project_invitations SET accepted_at = now(), accepted_by = $1 WHERE id = $2",
-            [existingUser.rows[0].id, invitation.rows[0]!.id],
-          );
-        }
         return reply.code(201).send({ id: invitation.rows[0]!.id, robloxUserId: robloxUser.id, robloxUsername: robloxUser.name });
       } catch (error) {
         if ((error as { code?: string }).code === "23505") {

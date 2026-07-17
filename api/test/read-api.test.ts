@@ -671,6 +671,170 @@ test("Roblox invitation lookup returns the resolved account and avatar", async (
   await app.close();
 });
 
+test("pending invitations are listed for the signed-in Roblox account", async () => {
+  const createdAt = new Date();
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: null,
+            name: "Sky",
+            robloxUserId: "190970206",
+            robloxUsername: "skyfloans",
+            robloxDisplayName: "Sky",
+            robloxAvatarUrl: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_invitations inv")) {
+        assert.deepEqual(values, ["190970206"]);
+        return {
+          rows: [{
+            id: "30000000-0000-4000-8000-000000000001",
+            role: "viewer",
+            created_at: createdAt,
+            project_id: "20000000-0000-4000-8000-000000000001",
+            project_name: "Nuke RNG",
+            roblox_universe_id: "10395108329",
+            icon_url: "https://example.com/game.png",
+            inviter_username: "owner",
+            inviter_display_name: "Game Owner",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/invitations",
+    headers: { authorization: `Bearer ${"i".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  assert.deepEqual(response.json().data, [{
+    id: "30000000-0000-4000-8000-000000000001",
+    role: "viewer",
+    createdAt: createdAt.toISOString(),
+    project: {
+      id: "20000000-0000-4000-8000-000000000001",
+      name: "Nuke RNG",
+      robloxUniverseId: "10395108329",
+      iconUrl: "https://example.com/game.png",
+    },
+    invitedBy: { username: "owner", displayName: "Game Owner" },
+  }]);
+  await app.close();
+});
+
+test("accepting an invitation atomically grants project membership", async () => {
+  const transactionQueries: string[] = [];
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      transactionQueries.push(sql);
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("UPDATE project_invitations")) {
+        assert.deepEqual(values, [
+          "10000000-0000-4000-8000-000000000001",
+          "30000000-0000-4000-8000-000000000001",
+          "190970206",
+        ]);
+        return {
+          rows: [{ project_id: "20000000-0000-4000-8000-000000000001", role: "viewer" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("INSERT INTO project_memberships")) {
+        assert.deepEqual(values, [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000001",
+          "viewer",
+        ]);
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`Unexpected transaction query: ${sql}`);
+    },
+    release: () => undefined,
+  };
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: null,
+            name: "Sky",
+            robloxUserId: "190970206",
+            robloxUsername: "skyfloans",
+            robloxDisplayName: "Sky",
+            robloxAvatarUrl: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    connect: async () => client,
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/invitations/30000000-0000-4000-8000-000000000001/accept",
+    headers: { authorization: `Bearer ${"a".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(transactionQueries.includes("COMMIT"), true);
+  assert.equal(transactionQueries.includes("ROLLBACK"), false);
+  await app.close();
+});
+
+test("declining an invitation closes it without granting membership", async () => {
+  let grantedMembership = false;
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: null,
+            name: "Sky",
+            robloxUserId: "190970206",
+            robloxUsername: "skyfloans",
+            robloxDisplayName: "Sky",
+            robloxAvatarUrl: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("UPDATE project_invitations")) {
+        assert.deepEqual(values, ["30000000-0000-4000-8000-000000000001", "190970206"]);
+        return { rows: [{ id: "30000000-0000-4000-8000-000000000001" }], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO project_memberships")) grantedMembership = true;
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/invitations/30000000-0000-4000-8000-000000000001/decline",
+    headers: { authorization: `Bearer ${"d".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(grantedMembership, false);
+  await app.close();
+});
+
 test("feedback is returned with player and session attribution", async () => {
   const submittedAt = new Date();
   const pool = {
