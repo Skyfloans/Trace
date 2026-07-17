@@ -10,6 +10,34 @@ import {
   parseTimeRange,
   ReadApiError,
 } from "../src/read/http.js";
+import { getGameMetadata } from "../src/read/roblox.js";
+
+test("Roblox games with bracketed update tags remain linkable", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("games.roblox.com/v1/games")) {
+      return new Response(JSON.stringify({
+        data: [{ id: 8527226795, name: "[🍎💥] Eat a Fruit" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("thumbnails.roblox.com/v1/games/icons")) {
+      return new Response(JSON.stringify({
+        data: [{ state: "Completed", imageUrl: "https://example.com/game.png" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected Roblox URL: ${url}`);
+  };
+
+  assert.deepEqual(await getGameMetadata("8527226795"), {
+    universeId: "8527226795",
+    name: "[🍎💥] Eat a Fruit",
+    iconUrl: "https://example.com/game.png",
+  });
+});
 
 test("cursor round trips deterministic tie-breaker values", () => {
   const values = [42, "2026-07-13T23:41:54.000Z", "event-id"];

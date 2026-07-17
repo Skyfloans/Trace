@@ -64,10 +64,7 @@ export async function getGameMetadata(universeId: string): Promise<GameMetadata>
 
   const game = gameResponse?.data?.[0];
   const thumbnail = iconResponse?.data?.[0];
-  const name =
-    game?.id && game.name && !game.name.startsWith("[")
-      ? game.name
-      : null;
+  const name = game?.id && game.name?.trim() ? game.name.trim() : null;
   const value = {
     universeId,
     name,
