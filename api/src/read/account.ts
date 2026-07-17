@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
   findReadUserForRequest,
+  invalidateProjectMembership,
   invalidateReadSession,
   requireProjectRole,
   requireReadUser,
@@ -57,6 +58,7 @@ const callbackSchema = z.object({
 const universeParamsSchema = z.object({ universeId: numericId });
 const robloxUsernameParamsSchema = z.object({ username: robloxUsername });
 const projectParamsSchema = z.object({ projectId: z.uuid() });
+const memberParamsSchema = projectParamsSchema.extend({ userId: z.uuid() });
 const invitationParamsSchema = projectParamsSchema.extend({ invitationId: z.uuid() });
 const recipientInvitationParamsSchema = z.object({ invitationId: z.uuid() });
 const inviteSchema = z.object({
@@ -611,6 +613,139 @@ export async function registerAccountRoutes(
       })),
     };
   });
+
+  app.get(
+    "/v1/manage/projects/:projectId/members",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { projectId } = projectParamsSchema.parse(request.params);
+      await requireProjectRole(pool, request, projectId, ["owner", "admin"]);
+      const result = await pool.query(
+        `SELECT u.id, u.roblox_user_id, u.roblox_username,
+                u.roblox_display_name, u.roblox_avatar_url,
+                pm.role, pm.created_at
+         FROM project_memberships pm
+         JOIN users u ON u.id = pm.user_id
+         WHERE pm.project_id = $1
+         ORDER BY CASE pm.role
+           WHEN 'owner' THEN 1
+           WHEN 'admin' THEN 2
+           WHEN 'member' THEN 3
+           ELSE 4
+         END, COALESCE(u.roblox_display_name, u.roblox_username, u.name), u.id`,
+        [projectId],
+      );
+      reply.header("Cache-Control", "private, no-store");
+      return {
+        data: result.rows.map((row) => ({
+          id: row.id,
+          role: row.role,
+          joinedAt: new Date(row.created_at).toISOString(),
+          robloxUserId: row.roblox_user_id,
+          robloxUsername: row.roblox_username,
+          robloxDisplayName: row.roblox_display_name,
+          robloxAvatarUrl: row.roblox_avatar_url,
+        })),
+      };
+    },
+  );
+
+  app.delete(
+    "/v1/projects/:projectId/membership",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const user = requireReadUser(request);
+      const { projectId } = projectParamsSchema.parse(request.params);
+      const client = await beginTransaction(pool);
+      try {
+        const membership = await client.query<{ role: "owner" | "admin" | "member" | "viewer" }>(
+          `SELECT role FROM project_memberships
+           WHERE user_id = $1 AND project_id = $2
+           FOR UPDATE`,
+          [user.id, projectId],
+        );
+        const role = membership.rows[0]?.role;
+        if (!role) throw new ReadApiError(404, "membership_not_found", "You are not a member of this game.");
+        if (role === "owner") {
+          throw new ReadApiError(409, "owner_cannot_leave", "Transfer ownership before leaving this game.");
+        }
+        await client.query(
+          "DELETE FROM project_memberships WHERE user_id = $1 AND project_id = $2",
+          [user.id, projectId],
+        );
+        await client.query(
+          `UPDATE project_invitations SET revoked_at = now()
+           WHERE project_id = $1 AND accepted_by = $2 AND revoked_at IS NULL`,
+          [projectId, user.id],
+        );
+        await client.query("COMMIT");
+        invalidateProjectMembership(pool, user.id, projectId);
+        return reply.code(204).send();
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  app.delete(
+    "/v1/manage/projects/:projectId/members/:userId",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const actor = requireReadUser(request);
+      const { projectId, userId } = memberParamsSchema.parse(request.params);
+      if (actor.id === userId) {
+        throw new ReadApiError(400, "use_leave_membership", "Use the leave-team action to remove your own access.");
+      }
+
+      const client = await beginTransaction(pool);
+      try {
+        const actorMembership = await client.query<{ role: "owner" | "admin" | "member" | "viewer" }>(
+          `SELECT role FROM project_memberships
+           WHERE user_id = $1 AND project_id = $2
+           FOR UPDATE`,
+          [actor.id, projectId],
+        );
+        const actorRole = actorMembership.rows[0]?.role;
+        if (actorRole !== "owner" && actorRole !== "admin") {
+          throw new ReadApiError(403, "project_role_forbidden", "Your project role does not allow this action.");
+        }
+        const targetMembership = await client.query<{ role: "owner" | "admin" | "member" | "viewer" }>(
+          `SELECT role FROM project_memberships
+           WHERE user_id = $1 AND project_id = $2
+           FOR UPDATE`,
+          [userId, projectId],
+        );
+        const targetRole = targetMembership.rows[0]?.role;
+        if (!targetRole) throw new ReadApiError(404, "member_not_found", "That team member was not found.");
+        const canRemove = actorRole === "owner"
+          ? targetRole !== "owner"
+          : targetRole === "member" || targetRole === "viewer";
+        if (!canRemove) {
+          throw new ReadApiError(403, "member_rank_forbidden", "You can only remove team members below your role.");
+        }
+        await client.query(
+          "DELETE FROM project_memberships WHERE user_id = $1 AND project_id = $2",
+          [userId, projectId],
+        );
+        await client.query(
+          `UPDATE project_invitations SET revoked_at = now()
+           WHERE project_id = $1 AND accepted_by = $2 AND revoked_at IS NULL`,
+          [projectId, userId],
+        );
+        await client.query("COMMIT");
+        invalidateProjectMembership(pool, userId, projectId);
+        return reply.code(204).send();
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  );
 
   app.post("/v1/manage/projects", { preHandler: authenticate }, async (request, reply) => {
     const user = requireReadUser(request);

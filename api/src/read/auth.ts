@@ -107,6 +107,17 @@ export function invalidateReadSession(pool: Pool, token: string): void {
   }
 }
 
+export function invalidateProjectMembership(pool: Pool, userId: string, projectId: string): void {
+  const cache = getAuthCache(pool);
+  const cacheKey = `${userId}:${projectId}`;
+  const pending = cache.membershipLoads.get(cacheKey);
+  cache.memberships.delete(cacheKey);
+  cache.membershipLoads.delete(cacheKey);
+  if (pending) {
+    void pending.finally(() => cache.memberships.delete(cacheKey));
+  }
+}
+
 export async function findReadUserForRequest(
   pool: Pool,
   request: FastifyRequest,

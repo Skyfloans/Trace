@@ -835,6 +835,123 @@ test("declining an invitation closes it without granting membership", async () =
   await app.close();
 });
 
+test("a non-owner can leave a project and revoke their accepted invitation", async () => {
+  const transactionQueries: string[] = [];
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      transactionQueries.push(sql);
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
+      if (sql.includes("SELECT role FROM project_memberships")) {
+        assert.deepEqual(values, [
+          "10000000-0000-4000-8000-000000000001",
+          "20000000-0000-4000-8000-000000000001",
+        ]);
+        return { rows: [{ role: "viewer" }], rowCount: 1 };
+      }
+      if (sql.includes("DELETE FROM project_memberships")) return { rows: [], rowCount: 1 };
+      if (sql.includes("UPDATE project_invitations")) return { rows: [], rowCount: 1 };
+      throw new Error(`Unexpected transaction query: ${sql}`);
+    },
+    release: () => undefined,
+  };
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: null,
+            name: "Viewer",
+            robloxUserId: "190970206",
+            robloxUsername: "viewer",
+            robloxDisplayName: "Viewer",
+            robloxAvatarUrl: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    connect: async () => client,
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "DELETE",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/membership",
+    headers: { authorization: `Bearer ${"l".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 204);
+  assert.equal(transactionQueries.includes("COMMIT"), true);
+  assert.equal(transactionQueries.some((sql) => sql.includes("DELETE FROM project_memberships")), true);
+  assert.equal(transactionQueries.some((sql) => sql.includes("UPDATE project_invitations")), true);
+  await app.close();
+});
+
+test("admins can remove viewers but cannot remove another admin", async () => {
+  const actorId = "10000000-0000-4000-8000-000000000001";
+  const otherAdminId = "30000000-0000-4000-8000-000000000001";
+  const viewerId = "40000000-0000-4000-8000-000000000001";
+  let membershipDeletes = 0;
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") return { rows: [], rowCount: 0 };
+      if (sql.includes("SELECT role FROM project_memberships")) {
+        const userId = values?.[0];
+        if (userId === actorId) return { rows: [{ role: "admin" }], rowCount: 1 };
+        if (userId === otherAdminId) return { rows: [{ role: "admin" }], rowCount: 1 };
+        if (userId === viewerId) return { rows: [{ role: "viewer" }], rowCount: 1 };
+      }
+      if (sql.includes("DELETE FROM project_memberships")) {
+        membershipDeletes += 1;
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("UPDATE project_invitations")) return { rows: [], rowCount: 1 };
+      throw new Error(`Unexpected transaction query: ${sql}`);
+    },
+    release: () => undefined,
+  };
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: actorId,
+            email: null,
+            name: "Admin",
+            robloxUserId: "123",
+            robloxUsername: "admin",
+            robloxDisplayName: "Admin",
+            robloxAvatarUrl: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    connect: async () => client,
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const headers = { authorization: `Bearer ${"m".repeat(40)}` };
+
+  const forbidden = await app.inject({
+    method: "DELETE",
+    url: `/v1/manage/projects/20000000-0000-4000-8000-000000000001/members/${otherAdminId}`,
+    headers,
+  });
+  assert.equal(forbidden.statusCode, 403);
+  assert.equal(forbidden.json().error.code, "member_rank_forbidden");
+
+  const removed = await app.inject({
+    method: "DELETE",
+    url: `/v1/manage/projects/20000000-0000-4000-8000-000000000001/members/${viewerId}`,
+    headers,
+  });
+  assert.equal(removed.statusCode, 204);
+  assert.equal(membershipDeletes, 1);
+  await app.close();
+});
+
 test("feedback is returned with player and session attribution", async () => {
   const submittedAt = new Date();
   const pool = {
