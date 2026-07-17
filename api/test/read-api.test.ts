@@ -39,6 +39,39 @@ test("Roblox games with bracketed update tags remain linkable", async (t) => {
   });
 });
 
+test("private Roblox games fall back to universe metadata", async (t) => {
+  const originalFetch = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.includes("games.roblox.com/v1/games")) {
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.includes("develop.roblox.com/v1/universes/multiget")) {
+      return new Response(JSON.stringify({
+        data: [{ id: 6890661035, name: "Kats Ideas", privacyType: "Private" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("thumbnails.roblox.com/v1/games/icons")) {
+      return new Response(JSON.stringify({
+        data: [{ state: "Completed", imageUrl: "https://example.com/private-game.png" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected Roblox URL: ${url}`);
+  };
+
+  assert.deepEqual(await getGameMetadata("6890661035"), {
+    universeId: "6890661035",
+    name: "Kats Ideas",
+    iconUrl: "https://example.com/private-game.png",
+  });
+});
+
 test("cursor round trips deterministic tie-breaker values", () => {
   const values = [42, "2026-07-13T23:41:54.000Z", "event-id"];
   assert.deepEqual(decodeCursor(encodeCursor(values)), values);

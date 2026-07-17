@@ -33,6 +33,11 @@ const gameCache = new Map<string, CachedValue<GameMetadata>>();
 const headshotCache = new Map<string, CachedValue<string | null>>();
 const CACHE_MS = 60 * 60 * 1_000;
 
+function usableGameName(name: string | undefined): string | null {
+  const value = name?.trim();
+  return value && value.toLowerCase() !== "[ content deleted ]" ? value : null;
+}
+
 async function robloxJson<T>(url: string): Promise<T | null> {
   try {
     const response = await fetch(url, {
@@ -64,7 +69,16 @@ export async function getGameMetadata(universeId: string): Promise<GameMetadata>
 
   const game = gameResponse?.data?.[0];
   const thumbnail = iconResponse?.data?.[0];
-  const name = game?.id && game.name?.trim() ? game.name.trim() : null;
+  let name = game?.id ? usableGameName(game.name) : null;
+  if (!name) {
+    const universeResponse = await robloxJson<{
+      data?: Array<{ id?: number; name?: string }>;
+    }>(`https://develop.roblox.com/v1/universes/multiget?ids=${encodedId}`);
+    const universe = universeResponse?.data?.find(
+      (candidate) => String(candidate.id) === universeId,
+    );
+    name = usableGameName(universe?.name);
+  }
   const value = {
     universeId,
     name,
