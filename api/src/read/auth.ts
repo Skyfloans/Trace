@@ -97,6 +97,17 @@ function readSessionToken(request: FastifyRequest): string | null {
   return token && token.length >= 32 ? token : null;
 }
 
+export function invalidateReadSession(pool: Pool, token: string): void {
+  const cache = getAuthCache(pool);
+  const cacheKey = createHash("sha256").update(token).digest("hex");
+  const pending = cache.userLoads.get(cacheKey);
+  cache.users.delete(cacheKey);
+  cache.userLoads.delete(cacheKey);
+  if (pending) {
+    void pending.finally(() => cache.users.delete(cacheKey));
+  }
+}
+
 export async function findReadUserForRequest(
   pool: Pool,
   request: FastifyRequest,

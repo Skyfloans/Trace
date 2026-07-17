@@ -343,6 +343,34 @@ test("activity queries combine raw occurrences with hourly rollups", async () =>
   await app.close();
 });
 
+test("logout is idempotent and always clears the browser session", async () => {
+  let revoked = false;
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("UPDATE web_sessions SET revoked_at")) {
+        revoked = true;
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const authenticated = await app.inject({
+    method: "POST",
+    url: "/v1/auth/logout",
+    cookies: { trace_session: "s".repeat(43) },
+  });
+  assert.equal(authenticated.statusCode, 204);
+  assert.equal(revoked, true);
+  assert.match(authenticated.headers["set-cookie"] ?? "", /trace_session=;/);
+
+  const alreadySignedOut = await app.inject({ method: "POST", url: "/v1/auth/logout" });
+  assert.equal(alreadySignedOut.statusCode, 204);
+  assert.match(alreadySignedOut.headers["set-cookie"] ?? "", /trace_session=;/);
+  await app.close();
+});
+
 test("Roblox OAuth reports when deployment credentials are not configured", async () => {
   const pool = { query: async () => ({ rows: [], rowCount: 0 }) } as unknown as Pool;
   const app = await buildApp(pool);

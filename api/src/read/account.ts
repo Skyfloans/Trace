@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import {
   findReadUserForRequest,
+  invalidateReadSession,
   requireProjectRole,
   requireReadUser,
 } from "./auth.js";
@@ -423,12 +424,18 @@ export async function registerAccountRoutes(
     return { user };
   });
 
-  app.post("/v1/auth/logout", { preHandler: authenticate }, async (request, reply) => {
+  app.post("/v1/auth/logout", async (request, reply) => {
     const token = request.cookies.trace_session;
     if (token) {
       await pool.query("UPDATE web_sessions SET revoked_at = now() WHERE token_hash = $1", [hash(token)]);
+      invalidateReadSession(pool, token);
     }
-    reply.clearCookie("trace_session", { path: "/" });
+    reply.clearCookie("trace_session", {
+      path: "/",
+      httpOnly: true,
+      secure: oauth?.redirectUri.startsWith("https://") ?? true,
+      sameSite: "lax",
+    });
     return reply.code(204).send();
   });
 
