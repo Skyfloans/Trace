@@ -148,6 +148,20 @@ async function getRobloxUser(accessToken: string): Promise<RobloxUserInfo> {
   return user;
 }
 
+async function getRobloxAvatarUrl(robloxUserId: string): Promise<string | null> {
+  const response = await fetch(
+    `https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds=${encodeURIComponent(robloxUserId)}&size=150x150&format=Png&isCircular=false`,
+    { headers: { Accept: "application/json" }, signal: AbortSignal.timeout(8_000) },
+  ).catch(() => null);
+  if (!response?.ok) return null;
+
+  const body = (await response.json().catch(() => null)) as {
+    data?: Array<{ state?: string; imageUrl?: string }>;
+  } | null;
+  const avatar = body?.data?.[0];
+  return avatar?.state === "Completed" ? avatar.imageUrl ?? null : null;
+}
+
 async function upsertRobloxUser(
   pool: Pool,
   existingUserId: string | null,
@@ -162,7 +176,7 @@ async function upsertRobloxUser(
        SET roblox_user_id = $2,
            roblox_username = $3,
            roblox_display_name = $4,
-           roblox_avatar_url = $5,
+           roblox_avatar_url = COALESCE($5, roblox_avatar_url),
            name = COALESCE(name, $4),
            last_login_at = now()
        WHERE id = $1
@@ -186,7 +200,10 @@ async function upsertRobloxUser(
      ON CONFLICT (roblox_user_id) WHERE roblox_user_id IS NOT NULL DO UPDATE
      SET roblox_username = EXCLUDED.roblox_username,
          roblox_display_name = EXCLUDED.roblox_display_name,
-         roblox_avatar_url = EXCLUDED.roblox_avatar_url,
+         roblox_avatar_url = COALESCE(
+           EXCLUDED.roblox_avatar_url,
+           users.roblox_avatar_url
+         ),
          last_login_at = now()
      RETURNING id`,
     [profile.sub, username, displayName, profile.picture ?? null],
@@ -372,7 +389,13 @@ export async function registerAccountRoutes(
         code_verifier: flow.code_verifier,
         redirect_uri: oauth.redirectUri,
       });
-      const profile = await getRobloxUser(tokens.access_token);
+      const oauthProfile = await getRobloxUser(tokens.access_token);
+      const profile = {
+        ...oauthProfile,
+        picture:
+          oauthProfile.picture ??
+          (await getRobloxAvatarUrl(oauthProfile.sub)),
+      };
       const userId = await upsertRobloxUser(pool, flow.user_id, profile);
       await acceptPendingInvitations(pool, userId, profile.sub);
 

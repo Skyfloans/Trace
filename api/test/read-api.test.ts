@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { Pool } from "pg";
@@ -371,6 +372,49 @@ test("logout is idempotent and always clears the browser session", async () => {
   await app.close();
 });
 
+test("browser session cookie takes precedence over a development bearer token", async () => {
+  const browserToken = "browser-session-".padEnd(40, "b");
+  const developerToken = "developer-session-".padEnd(40, "d");
+  const browserHash = createHash("sha256").update(browserToken).digest("hex");
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("FROM web_sessions")) {
+        const tokenHash = values?.[0];
+        assert.ok(Buffer.isBuffer(tokenHash));
+        const isBrowserSession = tokenHash.toString("hex") === browserHash;
+        return {
+          rows: [{
+            id: isBrowserSession
+              ? "10000000-0000-4000-8000-000000000001"
+              : "20000000-0000-4000-8000-000000000001",
+            email: null,
+            name: isBrowserSession ? "Sky" : "Trace Developer",
+            robloxUserId: isBrowserSession ? "190970206" : null,
+            robloxUsername: isBrowserSession ? "skyfloans" : null,
+            robloxDisplayName: isBrowserSession ? "Sky" : null,
+            robloxAvatarUrl: isBrowserSession ? "https://example.com/sky.png" : null,
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/auth/me",
+    headers: { authorization: `Bearer ${developerToken}` },
+    cookies: { trace_session: browserToken },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().user.robloxUsername, "skyfloans");
+  assert.equal(response.json().user.robloxAvatarUrl, "https://example.com/sky.png");
+  await app.close();
+});
+
 test("Roblox OAuth reports when deployment credentials are not configured", async () => {
   const pool = { query: async () => ({ rows: [], rowCount: 0 }) } as unknown as Pool;
   const app = await buildApp(pool);
@@ -450,6 +494,83 @@ test("Roblox OAuth callback rejects a flow started in another browser", async ()
 
   assert.equal(response.statusCode, 302);
   assert.match(response.headers.location!, /oauthError=oauth_browser_mismatch/);
+  await app.close();
+});
+
+test("Roblox OAuth stores a headshot when userinfo omits the picture claim", async (t) => {
+  const originalFetch = globalThis.fetch;
+  const browserBinding = "browser-binding".padEnd(40, "b");
+  let storedAvatarUrl: unknown;
+  t.after(() => {
+    globalThis.fetch = originalFetch;
+  });
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    if (url.endsWith("/oauth/v1/token")) {
+      return new Response(JSON.stringify({ access_token: "roblox-access-token" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.endsWith("/oauth/v1/userinfo")) {
+      return new Response(JSON.stringify({
+        sub: "190970206",
+        preferred_username: "skyfloans",
+        nickname: "Sky",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    if (url.includes("thumbnails.roblox.com/v1/users/avatar-headshot")) {
+      return new Response(JSON.stringify({
+        data: [{ state: "Completed", imageUrl: "https://example.com/sky.png" }],
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }
+    throw new Error(`Unexpected Roblox URL: ${url}`);
+  };
+
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("DELETE FROM roblox_oauth_flows")) {
+        return {
+          rows: [{
+            browser_binding_hash: createHash("sha256").update(browserBinding).digest(),
+            user_id: null,
+            intent: "login",
+            universe_id: null,
+            code_verifier: "v".repeat(48),
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("INSERT INTO users")) {
+        storedAvatarUrl = values?.[3];
+        return {
+          rows: [{ id: "10000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("WITH accepted AS")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("INSERT INTO web_sessions")) {
+        return { rows: [], rowCount: 1 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool, "http://localhost:5173", {
+    clientId: "client-id",
+    clientSecret: "client-secret",
+    redirectUri: "http://localhost:5173/api/v1/auth/roblox/callback",
+  });
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/auth/roblox/callback?code=test-code&state=${"s".repeat(40)}`,
+    cookies: { trace_oauth_binding: browserBinding },
+  });
+
+  assert.equal(response.statusCode, 302);
+  assert.match(response.headers.location!, /signedIn=true/);
+  assert.equal(storedAvatarUrl, "https://example.com/sky.png");
   await app.close();
 });
 

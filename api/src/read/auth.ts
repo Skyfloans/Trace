@@ -87,14 +87,13 @@ async function loadReadUser(
 }
 
 function readSessionToken(request: FastifyRequest): string | null {
-  const authorization = request.headers.authorization;
-  if (authorization?.startsWith("Bearer ")) {
-    const token = authorization.slice("Bearer ".length).trim();
-    return token.length >= 32 ? token : null;
-  }
-
   const token = request.cookies.trace_session;
-  return token && token.length >= 32 ? token : null;
+  if (token && token.length >= 32) return token;
+
+  const authorization = request.headers.authorization;
+  if (!authorization?.startsWith("Bearer ")) return null;
+  const bearerToken = authorization.slice("Bearer ".length).trim();
+  return bearerToken.length >= 32 ? bearerToken : null;
 }
 
 export function invalidateReadSession(pool: Pool, token: string): void {

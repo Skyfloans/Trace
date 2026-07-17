@@ -15,9 +15,10 @@ authenticate any read endpoint.
 Authorization: Bearer <TRACE_DEV_READ_TOKEN>
 ```
 
-Production website authentication should set the same opaque token in an
-`HttpOnly`, `Secure`, `SameSite=Lax` cookie named `trace_session`. Login and
-account provisioning are intentionally separate from this read-only API.
+Website authentication sets an opaque token in an `HttpOnly`, `Secure`,
+`SameSite=Lax` cookie named `trace_session`. When both the browser cookie and a
+development bearer token are present, the browser cookie takes precedence so
+the signed-in Roblox user's identity and project memberships are used.
 
 ## Response behavior
 
