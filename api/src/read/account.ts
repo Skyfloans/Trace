@@ -256,6 +256,10 @@ function cookieSecurity(config: RobloxOAuthConfig) {
   };
 }
 
+function oauthCallbackCookiePath(config: RobloxOAuthConfig): string {
+  return new URL(config.redirectUri).pathname;
+}
+
 async function resolveRobloxUsername(username: string): Promise<RobloxUserPreview> {
   const cacheKey = username.toLowerCase();
   const cached = robloxUserCache.get(cacheKey);
@@ -334,7 +338,7 @@ export async function registerAccountRoutes(
       [hash(state), hash(browserBinding), intent === "claim" ? existingUser!.id : existingUser?.id ?? null, intent, universeId ?? null, verifier, nonce],
     );
     reply.setCookie("trace_oauth_binding", browserBinding, {
-      path: "/v1/auth/roblox/callback",
+      path: oauthCallbackCookiePath(oauth),
       ...cookieSecurity(oauth),
       maxAge: 10 * 60,
     });
@@ -369,7 +373,9 @@ export async function registerAccountRoutes(
     const flow = flowResult.rows[0];
     if (!flow) return reply.redirect(oauthErrorRedirect(oauth, "invalid_or_expired_state"));
     const browserBinding = request.cookies.trace_oauth_binding;
-    reply.clearCookie("trace_oauth_binding", { path: "/v1/auth/roblox/callback" });
+    reply.clearCookie("trace_oauth_binding", {
+      path: oauthCallbackCookiePath(oauth),
+    });
     const bindingHash = browserBinding ? hash(browserBinding) : null;
     if (
       !bindingHash ||

@@ -460,6 +460,10 @@ test("Roblox OAuth start binds PKCE state to an HttpOnly browser cookie", async 
   assert.equal(response.statusCode, 302);
   assert.match(response.headers.location!, /^https:\/\/apis\.roblox\.com\/oauth\/v1\/authorize\?/);
   assert.match(String(response.headers["set-cookie"]), /trace_oauth_binding=.*HttpOnly/);
+  assert.match(
+    String(response.headers["set-cookie"]),
+    /Path=\/api\/v1\/auth\/roblox\/callback/,
+  );
   assert.equal(queries.some((sql) => sql.includes("browser_binding_hash")), true);
   await app.close();
 });
