@@ -53,6 +53,15 @@ const eventSchema = z
   })
   .strict();
 
+const feedbackSchema = z
+  .object({
+    id: z.uuid(),
+    sessionId: z.uuid(),
+    submittedAt: timestamp,
+    message: z.string().trim().min(8).max(500),
+  })
+  .strict();
+
 export const ingestBatchSchema = z
   .object({
     version: z.literal(1),
@@ -60,6 +69,7 @@ export const ingestBatchSchema = z
     job: jobSchema,
     sessions: z.array(sessionSchema).max(100).default([]),
     events: z.array(eventSchema).max(100).default([]),
+    feedback: z.array(feedbackSchema).max(100).default([]),
   })
   .strict()
   .superRefine((batch, context) => {
@@ -100,6 +110,16 @@ export const ingestBatchSchema = z
           code: "custom",
           path: ["events", index, "sessionId"],
           message: "Server events belong to the job and cannot reference a session",
+        });
+      }
+    }
+
+    for (const [index, feedback] of batch.feedback.entries()) {
+      if (!sessionIds.has(feedback.sessionId)) {
+        context.addIssue({
+          code: "custom",
+          path: ["feedback", index, "sessionId"],
+          message: "Feedback must reference a session included in the batch",
         });
       }
     }

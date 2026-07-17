@@ -6,12 +6,14 @@ type Config = {
 	IngestionSecretName: string,
 	DevelopmentIngestionKey: string?,
 	FlushIntervalSeconds: number,
+	EventAggregationWindowSeconds: number,
 	HeartbeatIntervalSeconds: number,
 	MaxEventsPerBatch: number,
 	MaxRepeatCount: number,
 	MaxBatchUncompressedBytes: number,
 	MaxSessionsPerBatch: number,
 	MaxQueuedEvents: number,
+	MaxSampledStackKeys: number,
 }
 
 export type Session = {
@@ -42,6 +44,14 @@ export type Event = {
 	lastOccurredAt: string?,
 	repeatCount: number?,
 	_aggregationKey: string?,
+	_flushAt: number?,
+}
+
+export type Feedback = {
+	id: string,
+	sessionId: string,
+	submittedAt: string,
+	message: string,
 }
 
 type Batcher = {
@@ -54,19 +64,26 @@ type Batcher = {
 	_sessionVersions: { [string]: number },
 	_sentSessionVersions: { [string]: number },
 	_events: { Event },
+	_feedback: { Feedback },
 	_pendingEventsByKey: { [string]: Event },
+	_pendingEventCount: number,
+	_sampledStackKeys: { [string]: boolean },
+	_sampledStackKeyCount: number,
 	_running: boolean,
 	_flushing: boolean,
 	_nextAttemptAt: number,
 	_retryDelay: number,
 	UpdateSession: (self: Batcher, session: Session) -> (),
 	AddEvent: (self: Batcher, event: Event) -> boolean,
+	AddFeedback: (self: Batcher, feedback: Feedback) -> boolean,
+	FinalizeSession: (self: Batcher, sessionId: string) -> (),
 	MarkJobEnded: (self: Batcher) -> (),
 	Start: (self: Batcher) -> (),
 	Flush: (self: Batcher, force: boolean?) -> boolean,
 	FlushAll: (self: Batcher, maximumBatches: number?) -> boolean,
 	_buildBatch: (self: Batcher, eventLimit: number?) -> ({ [string]: any }, number, { [string]: number }, number),
 	_hasPendingData: (self: Batcher) -> boolean,
+	_finalizePendingEvents: (self: Batcher, force: boolean, sessionId: string?) -> (),
 }
 
 local Batcher = {}
@@ -112,7 +129,11 @@ function Batcher.new(config: Config): Batcher
 		_sessionVersions = {},
 		_sentSessionVersions = {},
 		_events = {},
+		_feedback = {},
 		_pendingEventsByKey = {},
+		_pendingEventCount = 0,
+		_sampledStackKeys = {},
+		_sampledStackKeyCount = 0,
 		_running = false,
 		_flushing = false,
 		_nextAttemptAt = 0,
@@ -122,12 +143,20 @@ function Batcher.new(config: Config): Batcher
 	return self :: any
 end
 
+function Batcher:AddFeedback(feedback: Feedback): boolean
+	if #self._feedback >= 100 then return false end
+	table.insert(self._feedback, table.clone(feedback))
+	return true
+end
+
 function Batcher:UpdateSession(session: Session)
 	self._sessions[session.id] = table.clone(session)
 	self._sessionVersions[session.id] = (self._sessionVersions[session.id] or 0) + 1
 end
 
 function Batcher:AddEvent(event: Event): boolean
+	self:_finalizePendingEvents(false)
+
 	local aggregationKey = table.concat({
 		event.sessionId or "",
 		event.source,
@@ -143,20 +172,49 @@ function Batcher:AddEvent(event: Event): boolean
 			pending.lastOccurredAt = event.lastOccurredAt or event.occurredAt
 			return true
 		end
-		if #self._events >= self._config.MaxQueuedEvents then return false end
 		self._pendingEventsByKey[aggregationKey] = nil
+		self._pendingEventCount -= 1
+		pending._flushAt = nil
+		table.insert(self._events, pending)
 	end
 
-	if #self._events >= self._config.MaxQueuedEvents then return false end
+	if #self._events + self._pendingEventCount >= self._config.MaxQueuedEvents then return false end
 
 	local queuedEvent = table.clone(event)
+	local stackSampleKey = aggregationKey
+	if queuedEvent.stack then
+		if self._sampledStackKeys[stackSampleKey] then
+			queuedEvent.stack = nil
+		elseif self._sampledStackKeyCount >= self._config.MaxSampledStackKeys then
+			queuedEvent.stack = nil
+		else
+			self._sampledStackKeys[stackSampleKey] = true
+			self._sampledStackKeyCount += 1
+		end
+	end
 	queuedEvent.repeatCount = event.repeatCount or 1
 	queuedEvent.lastOccurredAt = event.lastOccurredAt or event.occurredAt
 	queuedEvent._aggregationKey = aggregationKey
-	table.insert(self._events, queuedEvent)
+	queuedEvent._flushAt = os.clock() + self._config.EventAggregationWindowSeconds
 	self._pendingEventsByKey[aggregationKey] = queuedEvent
+	self._pendingEventCount += 1
 	return true
 end
+
+function Batcher:_finalizePendingEvents(force: boolean, sessionId: string?)
+	local timestamp = os.clock()
+	for aggregationKey, event in self._pendingEventsByKey do
+		local matchesSession = sessionId ~= nil and event.sessionId == sessionId
+		if force or matchesSession or timestamp >= (event._flushAt or 0) then
+			self._pendingEventsByKey[aggregationKey] = nil
+			self._pendingEventCount -= 1
+			event._flushAt = nil
+			table.insert(self._events, event)
+		end
+	end
+end
+
+function Batcher:FinalizeSession(sessionId: string) self:_finalizePendingEvents(false, sessionId) end
 
 function Batcher:MarkJobEnded()
 	self._running = false
@@ -171,11 +229,13 @@ function Batcher:_buildBatch(eventLimit: number?): ({ [string]: any }, number, {
 	local events = table.create(eventCount)
 	local sessions = {}
 	local selectedSessionVersions = {}
+	local feedback = table.clone(self._feedback)
 
 	for index = 1, eventCount do
 		local event = self._events[index]
 		events[index] = table.clone(event)
 		events[index]._aggregationKey = nil
+		events[index]._flushAt = nil
 
 		local sessionId = event.sessionId
 		if sessionId and not selectedSessionVersions[sessionId] then
@@ -183,6 +243,15 @@ function Batcher:_buildBatch(eventLimit: number?): ({ [string]: any }, number, {
 			if session then
 				table.insert(sessions, session)
 				selectedSessionVersions[sessionId] = self._sessionVersions[sessionId]
+			end
+		end
+	end
+	for _, item in feedback do
+		if not selectedSessionVersions[item.sessionId] then
+			local session = self._sessions[item.sessionId]
+			if session then
+				table.insert(sessions, session)
+				selectedSessionVersions[item.sessionId] = self._sessionVersions[item.sessionId]
 			end
 		end
 	end
@@ -202,13 +271,14 @@ function Batcher:_buildBatch(eventLimit: number?): ({ [string]: any }, number, {
 		job = table.clone(self._job),
 		sessions = sessions,
 		events = events,
+		feedback = feedback,
 	}
 
 	return batch, eventCount, selectedSessionVersions, jobVersion
 end
 
 function Batcher:_hasPendingData(): boolean
-	if #self._events > 0 or self._sentJobVersion ~= self._jobVersion then return true end
+	if #self._events > 0 or #self._feedback > 0 or self._sentJobVersion ~= self._jobVersion then return true end
 
 	for sessionId, version in self._sessionVersions do
 		if self._sentSessionVersions[sessionId] ~= version then return true end
@@ -218,6 +288,7 @@ function Batcher:_hasPendingData(): boolean
 end
 
 function Batcher:Flush(force: boolean?): boolean
+	self:_finalizePendingEvents(force == true)
 	if self._flushing or not self:_hasPendingData() then return true end
 	if not self._authorization then return false end
 	if not force and os.clock() < self._nextAttemptAt then return false end
@@ -258,11 +329,10 @@ function Batcher:Flush(force: boolean?): boolean
 	local success = requestSuccess and response.Success
 	if success then
 		for _ = 1, eventCount do
-			local sentEvent = table.remove(self._events, 1)
-			local aggregationKey = sentEvent._aggregationKey
-			if aggregationKey and self._pendingEventsByKey[aggregationKey] == sentEvent then
-				self._pendingEventsByKey[aggregationKey] = nil
-			end
+			table.remove(self._events, 1)
+		end
+		for _ = 1, #batch.feedback do
+			table.remove(self._feedback, 1)
 		end
 		for sessionId, version in sessionVersions do
 			if self._sessionVersions[sessionId] == version then self._sentSessionVersions[sessionId] = version end
@@ -287,6 +357,7 @@ function Batcher:FlushAll(maximumBatches: number?): boolean
 		task.wait(0.1)
 	end
 	if self._flushing then return false end
+	self:_finalizePendingEvents(true)
 
 	local remainingBatches = maximumBatches or 20
 	while self:_hasPendingData() and remainingBatches > 0 do

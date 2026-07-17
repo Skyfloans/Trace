@@ -35,6 +35,7 @@ if not remote then
 	remote.Parent = ReplicatedStorage
 end
 local clientLogRemote = remote :: RemoteEvent
+local submitFeedbackRemote = TraceShared:WaitForChild("SubmitFeedback") :: RemoteEvent
 
 local batcher = Batcher.new(Config)
 local playerSessions: { [Player]: Session } = {}
@@ -72,6 +73,7 @@ local function endSession(player: Player, reason: string)
 	session.endedAt = timestamp
 	session.endReason = reason
 	batcher:UpdateSession(session)
+	batcher:FinalizeSession(session.id)
 	playerSessions[player] = nil
 	rateStates[player] = nil
 end
@@ -123,8 +125,6 @@ clientLogRemote.OnServerEvent:Connect(function(player, payload)
 	if not allowed then return end
 
 	local session = getSession(player)
-	session.lastSeenAt = nowIso()
-	batcher:UpdateSession(session)
 
 	local context: { [string]: any } = {
 		clientReported = true,
@@ -134,8 +134,10 @@ clientLogRemote.OnServerEvent:Connect(function(player, payload)
 		local device = sanitizeString(payload.context.device, 32)
 		if device then
 			context.device = device
-			session.device = device
-			batcher:UpdateSession(session)
+			if session.device ~= device then
+				session.device = device
+				batcher:UpdateSession(session)
+			end
 		end
 	end
 
@@ -150,6 +152,19 @@ clientLogRemote.OnServerEvent:Connect(function(player, payload)
 		sourceScript = sanitizeString(payload.sourceScript, Protocol.MaxSourceScriptLength),
 		context = context,
 		repeatCount = repeatCount,
+	})
+end)
+
+submitFeedbackRemote.OnServerEvent:Connect(function(player, message)
+	if closing or typeof(message) ~= "string" then return end
+	local normalized = string.gsub(message, "^%s*(.-)%s*$", "%1")
+	if #normalized < 8 or #normalized > 500 then return end
+	local session = getSession(player)
+	batcher:AddFeedback({
+		id = HttpService:GenerateGUID(false),
+		sessionId = session.id,
+		submittedAt = nowIso(),
+		message = normalized,
 	})
 end)
 

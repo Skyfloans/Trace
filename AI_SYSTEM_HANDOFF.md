@@ -16,7 +16,8 @@ Trace is a Roblox observability product:
 - A Fastify API authenticates and stores telemetry in PostgreSQL.
 - A React portal reads grouped errors, occurrences, sessions, players, and
   server jobs through a separate authenticated read API.
-- Raw telemetry is retained for a rolling three-day window.
+- Detailed telemetry is retained for at least 24 hours; hourly aggregates are
+  retained for three days.
 
 The primary design goals are:
 
@@ -144,12 +145,13 @@ Applied migrations:
 database/migrations/001_initial_schema.sql
 database/migrations/002_ingestion_api.sql
 database/migrations/003_read_api.sql
+database/migrations/004_compact_occurrences.sql
 ```
 
 Pending and not yet applied to production:
 
 ```text
-database/migrations/004_compact_occurrences.sql
+database/migrations/005_tiered_retention.sql
 ```
 
 Apply them once, in order, to a new database. They are normal sequential
@@ -314,7 +316,7 @@ Stores individual event evidence:
 - original message and stack
 - context JSON
 
-It is partitioned by `occurred_at` for cheap three-day retention cleanup.
+It is partitioned by `occurred_at` for cheap whole-partition raw cleanup.
 
 ### Website authorization
 
@@ -339,11 +341,12 @@ SELECT purge_expired_trace_data();
 It repeats maintenance hourly.
 
 Occurrence partitions are created from three days in the past through three
-days ahead. Cleanup removes expired occurrences and stale related data.
+days ahead. Before an expired raw partition is dropped, migration 005 compacts
+its counts into hourly rollups retained for three days.
 
 The ingestion API rejects events:
 
-- Older than three days.
+- Older than 24 hours.
 - More than ten minutes in the future.
 
 ## 7. Roblox SDK flow
@@ -376,7 +379,7 @@ The client:
 - Hooks `LogService.MessageOut`.
 - Uses the shared `LogCollector`.
 - Detects a rough device category.
-- Combines identical events for one second and sends sanitized aggregates to
+- Combines identical events for five seconds and sends sanitized aggregates to
   the server `RemoteEvent`.
 
 Clients do not call the external API directly.
@@ -409,7 +412,8 @@ Current behavior:
 
 ```text
 Flush interval: 5 seconds
-Heartbeat interval: 60 seconds
+Event aggregation window: 60 seconds
+Heartbeat interval: configurable per game; 300 seconds by default
 Maximum events per batch: 100
 Maximum uncompressed JSON per SDK batch: approximately 256 KiB
 Maximum sessions per batch: 100
@@ -420,7 +424,8 @@ Shutdown flush: up to 20 batches
 ```
 
 Identical events for the same client session or server job are combined during
-each five-second flush window. One row retains a representative full stack plus
+a 60-second event window while lifecycle updates remain on a five-second
+transport cadence. One row retains a representative full stack plus
 `repeatCount`, `occurredAt`, and `lastOccurredAt`. Session starts and events are
 normally sent within about five seconds. Session
 and job `lastSeenAt` values are refreshed while active. Session end data is sent
@@ -570,7 +575,8 @@ GET /v1/projects/:projectId/players/:robloxUserId/headshot
 Read behavior:
 
 - Opaque cursor pagination, not offsets.
-- Maximum raw range of three days.
+- Detailed occurrence data is guaranteed for at least 24 hours; hourly
+  activity totals remain available for three days.
 - UTC ISO timestamps.
 - Roblox identifiers returned as strings.
 - Gzip responses.
@@ -781,13 +787,15 @@ Implemented locally but not deployed yet:
 3. Bulk-ingest a batch with a few set-based SQL statements instead of three
    sequential statements per event.
 
+Implemented locally but not deployed yet:
+
+4. Five-minute configurable session/job heartbeats, with join and leave still
+   delivered independently on the five-second transport cadence.
+5. Daily raw partitions retained for at least 24 hours, compacted into hourly
+   rollups retained for three days before the raw partition is dropped.
+
 Still intentionally unchanged or deferred:
 
-4. Stop updating every active session once per minute. Update every five
-   minutes, or persist only start/end and infer stale sessions from job health.
-   At 10,000 CCU, one-minute session heartbeats create 14.4 million updates/day.
-5. Keep raw occurrences for 24 hours and compact aggregates for three days if
-   product requirements permit.
 6. Fix or suppress known noisy game warnings.
 
 Current Neon Launch pricing checked July 13, 2026:
@@ -929,10 +937,10 @@ dist/
    - Railway `WEB_ORIGIN`
    - production cookie/auth domain strategy
 7. Implement proper production login/session issuance/logout.
-8. Apply migration 004 before deploying the compact-ingestion code.
-9. Verify repeat aggregation and logical counts against live traffic.
-10. Add hourly read rollups and session counters before millions of daily
-    occurrences.
+8. Apply migration 005 before deploying the second optimization pass.
+9. Verify 60-second repeat aggregation and five-minute heartbeats against live
+   traffic.
+10. Audit production index usage after enough representative traffic exists.
 11. Improve `MessageError` fallback capture and dropped-event metrics.
 12. Ask before deleting the intentionally retained Roblox test scripts.
 

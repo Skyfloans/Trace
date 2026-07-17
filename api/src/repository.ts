@@ -129,8 +129,18 @@ async function upsertSessions(
     return;
   }
 
-  const result = await client.query(
-    `INSERT INTO sessions (
+  const result = await client.query<{ matched_count: number }>(
+    `WITH input AS (
+       SELECT *
+       FROM jsonb_to_recordset($3::jsonb) AS session_input(
+         id uuid, player_id bigint, player_name text,
+         player_display_name text, device text, platform text,
+         started_at timestamptz, ended_at timestamptz,
+         last_seen_at timestamptz, end_reason text
+       )
+     ),
+     upserted AS (
+     INSERT INTO sessions (
        id, project_id, job_id, player_id, player_name, player_display_name,
        device, platform, started_at, ended_at, last_seen_at, end_reason
      )
@@ -138,11 +148,7 @@ async function upsertSessions(
        input.id, $1, $2, input.player_id, input.player_name,
        input.player_display_name, input.device, input.platform,
        input.started_at, input.ended_at, input.last_seen_at, input.end_reason
-     FROM jsonb_to_recordset($3::jsonb) AS input(
-       id uuid, player_id bigint, player_name text, player_display_name text,
-       device text, platform text, started_at timestamptz, ended_at timestamptz,
-       last_seen_at timestamptz, end_reason text
-     )
+     FROM input
      ON CONFLICT (id) DO UPDATE
      SET player_name = COALESCE(EXCLUDED.player_name, sessions.player_name),
          player_display_name = COALESCE(
@@ -156,7 +162,29 @@ async function upsertSessions(
          end_reason = COALESCE(EXCLUDED.end_reason, sessions.end_reason)
      WHERE sessions.project_id = EXCLUDED.project_id
        AND sessions.job_id = EXCLUDED.job_id
-     RETURNING id`,
+       AND (
+         sessions.player_name IS DISTINCT FROM COALESCE(EXCLUDED.player_name, sessions.player_name)
+         OR sessions.player_display_name IS DISTINCT FROM COALESCE(
+           EXCLUDED.player_display_name,
+           sessions.player_display_name
+         )
+         OR sessions.device IS DISTINCT FROM COALESCE(EXCLUDED.device, sessions.device)
+         OR sessions.platform IS DISTINCT FROM COALESCE(EXCLUDED.platform, sessions.platform)
+         OR sessions.ended_at IS DISTINCT FROM COALESCE(EXCLUDED.ended_at, sessions.ended_at)
+         OR sessions.last_seen_at < EXCLUDED.last_seen_at
+         OR sessions.end_reason IS DISTINCT FROM COALESCE(EXCLUDED.end_reason, sessions.end_reason)
+       )
+     RETURNING id
+     )
+     SELECT COUNT(*) FILTER (
+       WHERE upserted.id IS NOT NULL OR existing.id IS NOT NULL
+     )::int AS matched_count
+     FROM input
+     LEFT JOIN upserted ON upserted.id = input.id
+     LEFT JOIN sessions existing
+       ON existing.id = input.id
+      AND existing.project_id = $1
+      AND existing.job_id = $2`,
     [
       projectId,
       jobId,
@@ -177,7 +205,7 @@ async function upsertSessions(
     ],
   );
 
-  if (result.rowCount !== batch.sessions.length) {
+  if (result.rows[0]?.matched_count !== batch.sessions.length) {
     throw new Error("A session belongs to another project or job");
   }
 }
@@ -253,7 +281,11 @@ async function insertEvents(
      SET source_script = COALESCE(
        error_groups.source_script,
        EXCLUDED.source_script
-     )
+     ),
+         normalized_stack = COALESCE(
+           error_groups.normalized_stack,
+           EXCLUDED.normalized_stack
+         )
      RETURNING id, fingerprint`,
     [
       projectId,
@@ -347,6 +379,58 @@ async function insertEvents(
   return { accepted, duplicates: logicalEventCount - accepted };
 }
 
+async function insertFeedback(
+  client: PoolClient,
+  projectId: string,
+  batch: IngestBatch,
+): Promise<number> {
+  if (batch.feedback.length === 0) return 0;
+  await client.query(
+    `SELECT pg_advisory_xact_lock(
+       hashtextextended($1::text || ':' || sessions.player_id::text, 0)
+     )
+     FROM jsonb_to_recordset($2::jsonb) AS feedback_input(session_id uuid)
+     JOIN sessions ON sessions.id = feedback_input.session_id
+                  AND sessions.project_id = $1
+     ORDER BY sessions.player_id`,
+    [projectId, JSON.stringify(batch.feedback.map((item) => ({ session_id: item.sessionId })))],
+  );
+  const result = await client.query<{ accepted: number }>(
+    `WITH input AS (
+       SELECT * FROM jsonb_to_recordset($2::jsonb) AS feedback_input(
+         id uuid, session_id uuid, submitted_at timestamptz, message text
+       )
+     ), candidates AS (
+       SELECT DISTINCT ON (sessions.player_id)
+         input.*, sessions.player_id
+       FROM input
+       JOIN sessions ON sessions.id = input.session_id
+                    AND sessions.project_id = $1
+       ORDER BY sessions.player_id, input.submitted_at
+     ), inserted AS (
+       INSERT INTO feedback (id, project_id, session_id, player_id, submitted_at, message)
+       SELECT candidates.id, $1, candidates.session_id, candidates.player_id,
+              candidates.submitted_at, candidates.message
+       FROM candidates
+       WHERE NOT EXISTS (
+         SELECT 1 FROM feedback existing
+         WHERE existing.project_id = $1
+           AND existing.player_id = candidates.player_id
+           AND existing.submitted_at > candidates.submitted_at - INTERVAL '24 hours'
+       )
+       ON CONFLICT DO NOTHING
+       RETURNING id
+     ) SELECT COUNT(*)::int AS accepted FROM inserted`,
+    [projectId, JSON.stringify(batch.feedback.map((item) => ({
+      id: item.id,
+      session_id: item.sessionId,
+      submitted_at: item.submittedAt,
+      message: item.message,
+    })))],
+  );
+  return result.rows[0]?.accepted ?? 0;
+}
+
 export async function ingestBatch(
   pool: Pool,
   projectId: string,
@@ -355,6 +439,8 @@ export async function ingestBatch(
   return withTransaction(pool, async (client) => {
     const jobId = await upsertJob(client, projectId, batch);
     await upsertSessions(client, projectId, jobId, batch);
-    return insertEvents(client, projectId, jobId, batch);
+    const result = await insertEvents(client, projectId, jobId, batch);
+    await insertFeedback(client, projectId, batch);
+    return result;
   });
 }

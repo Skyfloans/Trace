@@ -32,7 +32,7 @@ Content-Encoding: gzip
 ```
 
 The API accepts at most 100 sessions, 100 events, and 512 KiB of decompressed
-JSON per request. Events older than three days or more than ten minutes in the
+JSON per request. Events older than 24 hours or more than ten minutes in the
 future are rejected.
 
 Valid ingestion-key lookups are cached in-process for 15 seconds. Rate limits
@@ -85,14 +85,16 @@ be recorded even when no errors occur.
 
 Server events omit `sessionId`; they are associated with the server job.
 
-`repeatCount` defaults to `1`. Roblox clients combine identical events for one
-second before relaying them to the Roblox server. The server combines them
-again during each five-second HTTP flush window, retaining the first full
-message/stack and the exact first/last server timestamps. This keeps grouped
-counts and session/job attribution while avoiding one database row per repeat.
-A repeat aggregate is capped at 10,000 events. The SDK also caps uncompressed
-batches at approximately 256 KiB before gzip, safely below the API's 512 KiB
-decompressed limit.
+`repeatCount` defaults to `1`. Roblox clients combine identical events for five
+seconds before relaying them to the Roblox server. The server keeps lifecycle
+delivery on a five-second cadence but holds identical errors in configurable
+60-second buckets. Leaving finalizes that player's open buckets, and server
+shutdown flushes every remaining bucket. The first bucket carries a full stack;
+later buckets for the same exact error carry counts and timestamps only. This
+keeps grouped counts and session/job attribution while avoiding one database
+row per repeat. A repeat aggregate is capped at 10,000 events. The SDK also
+caps uncompressed batches at approximately 256 KiB before gzip, safely below
+the API's 512 KiB decompressed limit.
 
 Ingestion uses set-based group, occurrence, and session writes. Retried
 aggregate UUIDs remain idempotent, and accepted counts represent logical events
@@ -138,3 +140,25 @@ Before publishing:
 4. Enable **Allow HTTP Requests** in Experience Settings > Security.
 
 The committed configuration never contains the production ingestion key.
+
+`Config.luau` exposes the main per-game cost controls:
+
+```luau
+FlushIntervalSeconds = 5,             -- join/leave and ready-batch delivery
+EventAggregationWindowSeconds = 60,  -- identical error bucket size
+HeartbeatIntervalSeconds = 300,      -- set to 60 for higher-fidelity games
+```
+
+Join and leave are independent of the heartbeat interval, so a player who
+leaves after one minute is still recorded immediately. The heartbeat mainly
+improves liveness estimates when a client or server disappears without a clean
+leave event.
+
+## Tiered retention
+
+Migration 005 keeps detailed occurrence partitions for at least 24 hours (and
+at most roughly 48 hours because partitions are dropped by whole UTC day).
+Before a partition is dropped, counts are compacted into hourly project/error
+rollups retained for three days. Activity charts combine raw and rolled-up
+counts without expanding repeats. Messages, stacks, sessions, and individual
+occurrence inspection remain raw-data features.

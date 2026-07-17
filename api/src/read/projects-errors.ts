@@ -409,26 +409,53 @@ export async function registerProjectAndErrorRoutes(
       }
 
       const parameters = new QueryParameters();
-      const conditions = [
-        `o.project_id = ${parameters.add(projectId)}`,
-        `o.occurred_at >= ${parameters.add(time.from)}`,
-        `o.occurred_at < ${parameters.add(time.to)}`,
-        `eg.level = ANY(${parameters.addArray(severities)}::log_level[])`,
+      const project = parameters.add(projectId);
+      const from = parameters.add(time.from);
+      const to = parameters.add(time.to);
+      const severity = parameters.addArray(severities);
+      const rawConditions = [
+        `o.project_id = ${project}`,
+        `o.occurred_at >= ${from}`,
+        `o.occurred_at < ${to}`,
+        `eg.level = ANY(${severity}::log_level[])`,
+      ];
+      const rollupConditions = [
+        `r.project_id = ${project}`,
+        `r.bucket_at >= date_trunc('hour', ${from}::timestamptz)`,
+        `r.bucket_at < ${to}`,
+        `eg.level = ANY(${severity}::log_level[])`,
       ];
       if (sides) {
-        conditions.push(
-          `eg.source = ANY(${parameters.addArray(sides)}::log_source[])`,
-        );
+        const side = parameters.addArray(sides);
+        rawConditions.push(`eg.source = ANY(${side}::log_source[])`);
+        rollupConditions.push(`eg.source = ANY(${side}::log_source[])`);
       }
 
       const result = await pool.query(
-        `SELECT
-           date_trunc('${bucket}', o.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
-           COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'client'), 0)::int AS client_count,
-           COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'server'), 0)::int AS server_count
-         FROM occurrences o
-         JOIN error_groups eg ON eg.id = o.group_id
-         WHERE ${conditions.join(" AND ")}
+        `WITH counts AS (
+           SELECT
+             date_trunc('${bucket}', o.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+             COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
+             COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
+           FROM occurrences o
+           JOIN error_groups eg ON eg.id = o.group_id
+           WHERE ${rawConditions.join(" AND ")}
+           GROUP BY bucket_at
+           UNION ALL
+           SELECT
+             date_trunc('${bucket}', r.bucket_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+             COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
+             COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
+           FROM occurrence_rollups_hourly r
+           JOIN error_groups eg ON eg.id = r.group_id
+           WHERE ${rollupConditions.join(" AND ")}
+           GROUP BY bucket_at
+         )
+         SELECT
+           bucket_at,
+           SUM(client_count)::bigint AS client_count,
+           SUM(server_count)::bigint AS server_count
+         FROM counts
          GROUP BY bucket_at
          ORDER BY bucket_at`,
         parameters.values,
@@ -437,8 +464,8 @@ export async function registerProjectAndErrorRoutes(
         result.rows.map((row) => [
           new Date(row.bucket_at).getTime(),
           {
-            clientCount: row.client_count,
-            serverCount: row.server_count,
+            clientCount: Number(row.client_count),
+            serverCount: Number(row.server_count),
           },
         ]),
       );

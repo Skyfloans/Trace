@@ -36,6 +36,53 @@ test("raw query ranges cannot exceed retention", () => {
   );
 });
 
+test("ingestion rejects events outside raw retention", async () => {
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM project_api_keys")) {
+        return {
+          rows: [{ project_id: "20000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const startedAt = new Date(Date.now() - 25 * 60 * 60 * 1_000).toISOString();
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/batches",
+    headers: { authorization: `Bearer ${"k".repeat(40)}` },
+    payload: {
+      version: 1,
+      batchId: "10000000-0000-4000-8000-000000000001",
+      job: {
+        id: "20000000-0000-4000-8000-000000000001",
+        robloxJobId: "job",
+        placeId: "1",
+        startedAt,
+        lastSeenAt: startedAt,
+      },
+      sessions: [],
+      events: [
+        {
+          id: "30000000-0000-4000-8000-000000000001",
+          occurredAt: startedAt,
+          source: "server",
+          level: "warning",
+          message: "old warning",
+        },
+      ],
+    },
+  });
+
+  assert.equal(response.statusCode, 422);
+  assert.match(response.json().error, /24-hour raw retention/);
+  await app.close();
+});
+
 test("ingestion rate limits are isolated per Roblox server job", () => {
   const makeRequest = (jobId: string) =>
     ({
@@ -173,6 +220,109 @@ test("read authentication and membership checks reuse short-lived cache", async 
   assert.equal((await app.inject(request)).statusCode, 200);
   assert.equal(authenticationQueries, 1);
   assert.equal(membershipQueries, 1);
+  await app.close();
+});
+
+test("activity queries combine raw occurrences with hourly rollups", async () => {
+  let queriedRollups = false;
+  const bucketAt = new Date();
+  bucketAt.setUTCMinutes(0, 0, 0);
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [
+            {
+              id: "10000000-0000-4000-8000-000000000001",
+              email: "member@example.com",
+              name: "Member",
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("occurrence_rollups_hourly")) {
+        queriedRollups = true;
+        return {
+          rows: [
+            {
+              bucket_at: bucketAt,
+              client_count: "12",
+              server_count: "3",
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/activity",
+    headers: { authorization: `Bearer ${"z".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(queriedRollups, true);
+  const bucket = response
+    .json()
+    .data.find((row: { startAt: string }) => row.startAt === bucketAt.toISOString());
+  assert.deepEqual(bucket, {
+    startAt: bucketAt.toISOString(),
+    endAt: new Date(bucketAt.getTime() + 60 * 60 * 1_000).toISOString(),
+    clientCount: 12,
+    serverCount: 3,
+  });
+  await app.close();
+});
+
+test("feedback is returned with player and session attribution", async () => {
+  const submittedAt = new Date();
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return { rows: [{ id: "10000000-0000-4000-8000-000000000001", email: "member@example.com", name: "Member" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("FROM feedback f")) {
+        return { rows: [{
+          id: "30000000-0000-4000-8000-000000000001",
+          message: "The round timer feels too long.",
+          submitted_at: submittedAt,
+          session_id: "40000000-0000-4000-8000-000000000001",
+          player_id: "123",
+          player_name: "skyfloans",
+          player_display_name: "Sky",
+          device: "desktop",
+          platform: null,
+        }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/feedback",
+    headers: { authorization: `Bearer ${"f".repeat(40)}` },
+  });
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().data[0], {
+    id: "30000000-0000-4000-8000-000000000001",
+    message: "The round timer feels too long.",
+    submittedAt: submittedAt.toISOString(),
+    sessionId: "40000000-0000-4000-8000-000000000001",
+    player: { robloxUserId: "123", username: "skyfloans", displayName: "Sky", avatarUrl: null },
+    device: "desktop",
+  });
   await app.close();
 });
 

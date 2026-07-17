@@ -14,7 +14,7 @@ import { findProjectForApiKey, ingestBatch } from "./repository.js";
 import { ReadApiError } from "./read/http.js";
 import { registerReadApi } from "./read/index.js";
 
-const MAX_EVENT_AGE_MS = 3 * 24 * 60 * 60 * 1_000;
+const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1_000;
 const MAX_FUTURE_SKEW_MS = 10 * 60 * 1_000;
 
 export function ingestionRateLimitKey(request: FastifyRequest): string {
@@ -52,7 +52,7 @@ function validateEventTimes(occurredAtValues: string[]): string | null {
   for (const occurredAt of occurredAtValues) {
     const timestamp = Date.parse(occurredAt);
     if (timestamp < oldestAccepted) {
-      return "Events older than the three-day retention window are rejected";
+      return "Events older than the 24-hour raw retention window are rejected";
     }
     if (timestamp > newestAccepted) {
       return "Event timestamps cannot be more than ten minutes in the future";
@@ -165,10 +165,13 @@ export async function buildApp(
       }
 
       const timestampError = validateEventTimes(
-        parsed.data.events.flatMap((event) => [
-          event.occurredAt,
-          event.lastOccurredAt ?? event.occurredAt,
-        ]),
+        [
+          ...parsed.data.events.flatMap((event) => [
+            event.occurredAt,
+            event.lastOccurredAt ?? event.occurredAt,
+          ]),
+          ...parsed.data.feedback.map((item) => item.submittedAt),
+        ],
       );
       if (timestampError) {
         return reply.code(422).send({ error: timestampError });

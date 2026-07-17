@@ -1,4 +1,5 @@
 local LogService = game:GetService("LogService")
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ScriptContext = game:GetService("ScriptContext")
 local UserInputService = game:GetService("UserInputService")
@@ -81,6 +82,10 @@ task.spawn(function()
 		task.wait(Protocol.ClientFlushIntervalSeconds)
 		flushPendingEvents()
 	end
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if player == Players.LocalPlayer then flushPendingEvents() end
 end)
 
 ScriptContext.Error:Connect(

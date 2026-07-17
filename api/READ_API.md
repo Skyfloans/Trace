@@ -24,8 +24,9 @@ account provisioning are intentionally separate from this read-only API.
 - All timestamps are UTC ISO 8601 strings.
 - All Roblox identifiers are JSON strings.
 - List endpoints use opaque keyset cursors, never offsets.
-- High-volume queries default to the last 24 hours and cannot exceed the
-  three-day retention window.
+- High-volume queries default to the last 24 hours. Detailed occurrence data is
+  retained for at least 24 hours; compact hourly activity totals remain
+  available for three days.
 - Responses include `X-Request-Id`.
 - Read responses use gzip when supported.
 - Cacheable private responses include short `max-age` and
@@ -74,6 +75,10 @@ the first event represented by that sampled row. Group, activity, session, and
 job counts sum `repeatCount`, so compact storage does not change displayed
 event totals. Occurrence lists return sampled aggregate rows rather than
 expanding repeated events back into duplicate JSON objects.
+
+Activity buckets older than raw retention are reconstructed from hourly
+rollups. Minute buckets in that older period place the hour's total at the
+start of the hour because per-minute detail has intentionally expired.
 
 Query parameters and response shapes follow
 `Trace_Portal/READ_API_HANDOFF.md`.

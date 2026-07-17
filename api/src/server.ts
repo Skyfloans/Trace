@@ -8,7 +8,9 @@ let maintenanceTimer: NodeJS.Timeout | undefined;
 
 async function runMaintenance(): Promise<void> {
   await pool.query("SELECT ensure_occurrence_partitions(3)");
-  await pool.query("SELECT purge_expired_trace_data()");
+  await pool.query(
+    "SELECT purge_expired_trace_data(INTERVAL '24 hours', INTERVAL '3 days')",
+  );
 }
 
 app.addHook("onClose", async () => {
