@@ -412,6 +412,43 @@ test("browser session cookie takes precedence over a development bearer token", 
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().user.robloxUsername, "skyfloans");
   assert.equal(response.json().user.robloxAvatarUrl, "https://example.com/sky.png");
+  assert.equal(response.headers["cache-control"], "private, no-store");
+  await app.close();
+});
+
+test("project membership lists are never reused across browser accounts", async () => {
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: null,
+            name: "Ralph",
+            robloxUserId: "123",
+            robloxUsername: "HowdIFindThisGame",
+            robloxDisplayName: "ralph",
+            robloxAvatarUrl: "https://example.com/ralph.png",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM projects p")) {
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects",
+    cookies: { trace_session: "r".repeat(40) },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { data: [] });
+  assert.equal(response.headers["cache-control"], "private, no-store");
   await app.close();
 });
 

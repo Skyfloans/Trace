@@ -72,7 +72,7 @@ export async function registerProjectAndErrorRoutes(
         [user.id],
       );
 
-      cache(reply, 15);
+      reply.header("Cache-Control", "private, no-store");
       return {
         data: result.rows.map((row) => ({
           id: row.id,

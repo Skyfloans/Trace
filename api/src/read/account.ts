@@ -448,8 +448,9 @@ export async function registerAccountRoutes(
     }
   });
 
-  app.get("/v1/auth/me", { preHandler: authenticate }, async (request) => {
+  app.get("/v1/auth/me", { preHandler: authenticate }, async (request, reply) => {
     const user = requireReadUser(request);
+    reply.header("Cache-Control", "private, no-store");
     return { user };
   });
 
