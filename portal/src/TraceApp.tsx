@@ -37,6 +37,18 @@ const NAV_PATHS: Record<NavPage, string> = {
   games: '/games',
   team: '/team',
 }
+const PAGE_TITLES: Record<Page, string> = {
+  overview: 'Overview',
+  players: 'Players',
+  player: 'Player Investigation',
+  logs: 'Logs',
+  feedback: 'Feedback',
+  games: 'Games',
+  team: 'Team',
+  session: 'Session Logs',
+  error: 'Error Details',
+  job: 'Server Job',
+}
 const exactNumberFormatter = new Intl.NumberFormat()
 const compactNumberFormatter = new Intl.NumberFormat(undefined, {
   notation: 'compact',
@@ -246,6 +258,17 @@ function TraceApp() {
     'auth-me',
     Boolean(projectsResource.data),
   )
+  const documentTitle = explicitlySignedOut || projectsResource.error?.status === 401
+    ? 'Trace - Sign In'
+    : projectsResource.loading && !projectsResource.data
+      ? 'Trace'
+      : projectsResource.error
+        ? 'Trace - Error'
+        : `Trace - ${PAGE_TITLES[effectivePage]}`
+
+  useEffect(() => {
+    document.title = documentTitle
+  }, [documentTitle])
 
   useEffect(() => {
     if (project) {
