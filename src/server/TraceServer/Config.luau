@@ -19,6 +19,12 @@ local Config = {
 	MaxQueuedEvents = 1_000,
 	MaxSampledStackKeys = 5_000,
 	CaptureOutputMessages = false,
+
+	-- Known non-actionable messages are discarded before batching or upload.
+	-- Keep these prefixes specific so genuine warnings are never hidden.
+	IgnoredMessagePrefixes = {
+		"Data loaded for player ",
+	},
 }
 
 if RunService:IsStudio() then
@@ -31,6 +37,7 @@ if RunService:IsStudio() then
 		Config.EventAggregationWindowSeconds = localConfig.EventAggregationWindowSeconds
 			or Config.EventAggregationWindowSeconds
 		Config.HeartbeatIntervalSeconds = localConfig.HeartbeatIntervalSeconds or Config.HeartbeatIntervalSeconds
+		Config.IgnoredMessagePrefixes = localConfig.IgnoredMessagePrefixes or Config.IgnoredMessagePrefixes
 	end
 end
 

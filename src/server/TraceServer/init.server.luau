@@ -109,12 +109,57 @@ local function sanitizeString(value: any, maximumLength: number): string?
 	return string.sub(value, 1, maximumLength)
 end
 
+local function isIgnoredMessage(message: string): boolean
+	for _, prefix in Config.IgnoredMessagePrefixes do
+		if prefix ~= "" and string.sub(message, 1, #prefix) == prefix then return true end
+	end
+	return false
+end
+
+local function isIdentityCharacter(character: string): boolean
+	return character ~= "" and (string.match(character, "[%w_]") ~= nil)
+end
+
+local function containsBoundedIdentity(value: string?, identity: string): boolean
+	if not value or #identity < 3 then return false end
+
+	local searchFrom = 1
+	while true do
+		local first, last = string.find(value, identity, searchFrom, true)
+		if not first then return false end
+
+		local before = if first > 1 then string.sub(value, first - 1, first - 1) else ""
+		local after = if last < #value then string.sub(value, last + 1, last + 1) else ""
+		if not isIdentityCharacter(before) and not isIdentityCharacter(after) then return true end
+		searchFrom = first + 1
+	end
+end
+
+local function findReferencedSession(message: string, stack: string?, sourceScript: string?): Session?
+	local matchedSession: Session? = nil
+	for player, session in playerSessions do
+		local userId = tostring(player.UserId)
+		local matches = containsBoundedIdentity(message, player.Name)
+			or containsBoundedIdentity(stack, player.Name)
+			or containsBoundedIdentity(sourceScript, player.Name)
+			or containsBoundedIdentity(message, userId)
+			or containsBoundedIdentity(stack, userId)
+			or containsBoundedIdentity(sourceScript, userId)
+		if matches then
+			if matchedSession and matchedSession.id ~= session.id then return nil end
+			matchedSession = session
+		end
+	end
+	return matchedSession
+end
+
 clientLogRemote.OnServerEvent:Connect(function(player, payload)
 	if closing or typeof(payload) ~= "table" then return end
 
 	local level = payload.level
 	local message = sanitizeString(payload.message, Protocol.MaxMessageLength)
 	if typeof(level) ~= "string" or not allowedLevels[level] or not message or message == "" then return end
+	if isIgnoredMessage(message) then return end
 	level = level :: Level
 	local repeatCount = 1
 	if typeof(payload.repeatCount) == "number" and payload.repeatCount == payload.repeatCount then
@@ -169,22 +214,25 @@ submitFeedbackRemote.OnServerEvent:Connect(function(player, message)
 	})
 end)
 
-local serverCollector = LogCollector.new(
-	function(event)
-		batcher:AddEvent({
-			id = HttpService:GenerateGUID(false),
-			occurredAt = nowIso(),
-			source = "server",
-			level = event.level,
-			message = string.sub(event.message, 1, Protocol.MaxMessageLength),
-			stack = sanitizeString(event.stack, Protocol.MaxStackLength),
-			sourceScript = sanitizeString(event.sourceScript, Protocol.MaxSourceScriptLength),
-		})
-	end,
-	{
-		captureOutput = Config.CaptureOutputMessages,
-	}
-)
+local serverCollector = LogCollector.new(function(event)
+	if isIgnoredMessage(event.message) then return end
+	local message = string.sub(event.message, 1, Protocol.MaxMessageLength)
+	local stack = sanitizeString(event.stack, Protocol.MaxStackLength)
+	local sourceScript = sanitizeString(event.sourceScript, Protocol.MaxSourceScriptLength)
+	local referencedSession = findReferencedSession(message, stack, sourceScript)
+	batcher:AddEvent({
+		id = HttpService:GenerateGUID(false),
+		sessionId = if referencedSession then referencedSession.id else nil,
+		occurredAt = nowIso(),
+		source = "server",
+		level = event.level,
+		message = message,
+		stack = stack,
+		sourceScript = sourceScript,
+	})
+end, {
+	captureOutput = Config.CaptureOutputMessages,
+})
 
 ScriptContext.Error:Connect(
 	function(message, stackTrace, sourceScript) serverCollector:Error(message, stackTrace, sourceScript) end

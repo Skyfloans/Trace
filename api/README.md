@@ -196,7 +196,22 @@ project can see ignored Studio-only files such as `LocalConfig.luau`.
 FlushIntervalSeconds = 5,             -- join/leave and ready-batch delivery
 EventAggregationWindowSeconds = 60,  -- identical error bucket size
 HeartbeatIntervalSeconds = 300,      -- set to 60 for higher-fidelity games
+IgnoredMessagePrefixes = {           -- discard known noise before upload
+    "Data loaded for player ",
+},
 ```
+
+Use `IgnoredMessagePrefixes` only for messages that are known to be
+non-actionable. A matching client or server message is discarded in the game
+server before it consumes ingestion bandwidth or database storage. Ordinary
+diagnostic output should use `print()` instead of `warn()` while
+`CaptureOutputMessages` is disabled.
+
+Server warnings and errors that reference exactly one active player's username
+or user ID are automatically linked to that session. Trace normalizes the
+identity before fingerprinting, so messages such as `Failed for player Alice`
+and `Failed for player Bob` appear as one grouped issue while retaining their
+individual session evidence.
 
 Join and leave are independent of the heartbeat interval, so a player who
 leaves after one minute is still recorded immediately. The heartbeat mainly
