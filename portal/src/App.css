@@ -825,7 +825,7 @@ kbd {
 .player-stats {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   margin: 0;
 }
 
@@ -835,7 +835,7 @@ kbd {
 
 .session-grid {
   display: grid;
-  grid-template-columns: 1.25fr 1.25fr .65fr .65fr .35fr;
+  grid-template-columns: 1.25fr 1.25fr .65fr .65fr .35fr .42fr;
   align-items: center;
   gap: 10px;
   padding: 0 12px;
@@ -856,8 +856,10 @@ kbd {
 .session-table strong { font-size: 14px; }
 .session-table small { margin-top: 5px; color: var(--muted); font-size: 12px; }
 .mobile-session-context { display: none !important; }
-.error-count { padding: 5px 9px; border-radius: var(--radius-sm); background: var(--surface); }
+.error-count,
+.warning-count { padding: 5px 9px; border-radius: var(--radius-sm); background: var(--surface); font-variant-numeric: tabular-nums; }
 .error-count.hot { color: var(--error); background: var(--error-soft); }
+.warning-count.active { color: var(--warning); background: var(--warning-soft); }
 
 .logs-toolbar { align-items: flex-end; }
 .compact-search { min-width: 280px; flex: 1; display: grid; gap: 6px; }
@@ -1948,7 +1950,7 @@ kbd {
   .player-stats { margin-top: 24px; }
   .player-stats div:nth-child(odd) { border-left: 0; padding-left: 0; }
   .session-table .table-head { display: none; }
-  .session-grid { grid-template-columns: 1.2fr 1fr 44px; }
+  .session-grid { grid-template-columns: 1.2fr 1fr 44px 48px; }
   .session-grid > :nth-child(3),
   .session-grid > :nth-child(4) { display: none; }
   .mobile-session-context { display: block !important; }
@@ -2038,7 +2040,7 @@ kbd {
   .chart-legend { gap: 9px; }
   .error-grid { grid-template-columns: 48px 76px minmax(0, 1fr); gap: 4px; padding-inline: 0; }
   .error-grid > :nth-child(3) { display: none; }
-  .session-grid { grid-template-columns: minmax(150px, 1fr) 48px; }
+  .session-grid { grid-template-columns: minmax(140px, 1fr) 44px 48px; }
   .session-grid > :nth-child(2) { display: none; }
   .all-logs-table .table-head { display: none; }
   .all-log-grid {
