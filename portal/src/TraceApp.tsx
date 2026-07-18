@@ -110,6 +110,10 @@ function readCachedResource<T>(key: string): T | null {
   return cached.data as T
 }
 
+function primeResource<T>(key: string, data: T) {
+  resourceCache.set(key, { data, expiresAt: Date.now() + RESOURCE_CACHE_MS })
+}
+
 function loadResource<T>(key: string, load: (signal: AbortSignal) => Promise<T>): Promise<T> {
   const pending = resourceLoads.get(key)
   if (pending) return pending as Promise<T>
@@ -870,7 +874,7 @@ function PlayerDetails({ project, player, pagination, setPagination, onBack, onO
         <div className="section-heading"><div><h2 id="recent-sessions-title">Recent sessions</h2><p>Retained activity for {project.name} · Page {pagination.page}</p></div></div>
         {sessionsResource.error ? <InlineError error={sessionsResource.error} retry={sessionsResource.reload} /> : sessionsResource.loading && !sessionsResource.data ? <RowsLoading /> : sessions.length ? <div className="session-table">
           <div className="table-head session-grid"><span>Session start</span><span>Game / server</span><span>Duration</span><span>Device</span><span>Errors</span><span>Warnings</span></div>
-          {sessions.map((session) => <button className="session-grid" key={session.id} onClick={() => onOpenSession(session.id)} aria-label={`Open session. Started ${formatDate(session.startedAt)}. ${project.name}. ${session.errorCount} errors and ${session.warningCount} warnings.`}><span><strong>{formatDate(session.startedAt)}</strong><small>{session.endedAt ? 'Ended' : 'Active now'}</small><small className="mobile-session-context">{project.name} · {session.serverJob.region ?? 'Unknown region'} · {session.device ?? session.platform ?? 'Unknown device'}</small></span><span><strong>{project.name}</strong><small>{session.serverJob.region ?? 'Unknown region'} · {shortId(session.serverJob.robloxJobId)}</small></span><span>{formatDuration(session.durationMs)}</span><span>{session.device ?? session.platform ?? 'Unknown'}</span><span><b className={session.errorCount > 5 ? 'error-count hot' : 'error-count'}>{session.errorCount}</b></span><span><b className={session.warningCount > 0 ? 'warning-count active' : 'warning-count'}>{session.warningCount}</b></span></button>)}
+          {sessions.map((session) => <button className="session-grid" key={session.id} onClick={() => { primeResource(`${project.id}:${session.id}:detail`, session); onOpenSession(session.id) }} aria-label={`Open session. Started ${formatDate(session.startedAt)}. ${project.name}. ${session.errorCount} errors and ${session.warningCount} warnings.`}><span><strong>{formatDate(session.startedAt)}</strong><small>{session.endedAt ? 'Ended' : 'Active now'}</small><small className="mobile-session-context">{project.name} · {session.serverJob.region ?? 'Unknown region'} · {session.device ?? session.platform ?? 'Unknown device'}</small></span><span><strong>{project.name}</strong><small>{session.serverJob.region ?? 'Unknown region'} · {shortId(session.serverJob.robloxJobId)}</small></span><span>{formatDuration(session.durationMs)}</span><span>{session.device ?? session.platform ?? 'Unknown'}</span><span><b className={session.errorCount > 5 ? 'error-count hot' : 'error-count'}>{session.errorCount}</b></span><span><b className={session.warningCount > 0 ? 'warning-count active' : 'warning-count'}>{session.warningCount}</b></span></button>)}
         </div> : <PageStatus compact title="No retained sessions" copy="This player has no sessions in the current retention window." />}
         {sessionsResource.data && (pagination.page > 1 || sessionsResource.data.nextCursor) && <Pagination page={pagination.page} hasNext={Boolean(sessionsResource.data.nextCursor)} loading={sessionsResource.loading} onPrevious={previousPage} onNext={nextPage} label="Player session pages" />}
       </section>
@@ -1347,11 +1351,17 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
   const [level, setLevel] = useState('all')
   const [shareFallback, setShareFallback] = useState('')
   const session = useResource((signal) => apiGet<Session>(projectPath(project.id, `/sessions/${sessionId}`), signal), `${project.id}:${sessionId}:detail`)
-  const timeline = useResource(
+  const timelinePreview = useResource(
+    (signal) => apiGet<CursorPage<LogOccurrence>>(projectPath(project.id, `/sessions/${sessionId}/timeline${queryString({ around: selectedEventId ?? undefined, before: selectedEventId ? 50 : undefined, after: selectedEventId ? 50 : undefined, limit: selectedEventId ? undefined : 100 })}`), signal),
+    `${project.id}:${sessionId}:timeline-preview`,
+  )
+  const fullTimeline = useResource(
     (signal) => apiGet<CursorPage<LogOccurrence>>(projectPath(project.id, `/sessions/${sessionId}/timeline${queryString({ includeAllServer: 'true', around: selectedEventId ?? undefined, before: selectedEventId ? 100 : undefined, after: selectedEventId ? 100 : undefined, limit: selectedEventId ? undefined : 500 })}`), signal),
     `${project.id}:${sessionId}:timeline`,
+    Boolean(timelinePreview.data),
   )
-  const events = useMemo(() => timeline.data?.data ?? [], [timeline.data])
+  const timelineData = fullTimeline.data ?? timelinePreview.data
+  const events = useMemo(() => timelineData?.data ?? [], [timelineData])
   const selected = events.find((event) => event.id === selectedEventId) ?? events.find((event) => event.severity === 'error') ?? events[0] ?? null
 
   useEffect(() => {
@@ -1391,7 +1401,9 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
   if (session.error) return <><BackButton onClick={onBack} label={backLabel} /><InlineError error={session.error} retry={session.reload} /></>
   if (!sessionData) return <><BackButton onClick={onBack} label={backLabel} /><RowsLoading /></>
 
-  const timelinePending = timeline.loading && !timeline.data
+  const timelinePending = timelinePreview.loading && !timelineData
+  const timelineError = timelinePreview.error && !timelineData ? timelinePreview.error : null
+  const hydratingTimeline = Boolean(timelinePreview.data) && fullTimeline.loading && !fullTimeline.data
 
   return (
     <div className="session-page">
@@ -1402,7 +1414,7 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
         <div className="session-actions"><button aria-expanded={findOpen} onClick={() => setFindOpen(!findOpen)}><Search size={16} />Find</button><LabeledSelect label="Level" value={level} onChange={setLevel} options={[['all', 'All'], ['error', 'Error'], ['warning', 'Warning']]} compact icon={<ListFilter size={16} aria-hidden="true" />} /><button disabled={timelinePending} onClick={() => setSelectedEventId(events.find((event) => event.severity === 'error')?.id ?? events[0]?.id ?? null)}><Clock3 size={16} />First error</button></div>
       </div>
       {findOpen && <div className="session-find"><label htmlFor="session-find">Find in this session</label><input autoFocus id="session-find" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search message, source, or stack" /><button aria-label="Close find" onClick={() => { setFindOpen(false); setQuery('') }}><X size={17} /></button></div>}
-      {timeline.error ? <InlineError error={timeline.error} retry={timeline.reload} title="Could not load session events" /> : timelinePending ? <SessionTimelineLoading mode={mode} session={sessionData} /> : <>{selected ? <section className="evidence-strip" aria-labelledby="selected-evidence-title">
+      {timelineError ? <InlineError error={timelineError} retry={timelinePreview.reload} title="Could not load session events" /> : timelinePending ? <SessionTimelineLoading mode={mode} session={sessionData} /> : <>{hydratingTimeline && <div className="timeline-hydration-status" role="status"><span />Loading remaining server events…</div>}{fullTimeline.error && <InlineError error={fullTimeline.error} retry={fullTimeline.reload} title="Some server events could not be loaded" />}{selected ? <section className="evidence-strip" aria-labelledby="selected-evidence-title">
         <div><span>Selected evidence</span><h2 id="selected-evidence-title">{selected.message}</h2><p>{formatPreciseTime(selected.occurredAt)} · {selected.source ?? 'Unknown source'}{selected.correlation ? ` · correlated within ${Math.round(selected.correlation.deltaMs)} ms (${selected.correlation.confidence} confidence)` : ''}</p>{selected.stackTrace && <pre>{selected.stackTrace}</pre>}</div>
         <div><button onClick={copyEvidence}><Copy size={16} />Copy</button><button onClick={exportEvidence}><Download size={16} />Export JSON</button><button onClick={shareEvidence}><Share2 size={16} />Share</button></div>
         {shareFallback && <label className="share-fallback">Share link<input readOnly value={shareFallback} onFocus={(event) => event.currentTarget.select()} /></label>}

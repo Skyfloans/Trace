@@ -1034,6 +1034,25 @@ kbd {
 }
 .timeline-skeleton-lines i:last-child { width: 62%; animation-delay: 100ms; }
 
+.timeline-hydration-status {
+  min-height: 28px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.timeline-hydration-status span {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--info);
+  animation: timeline-pulse 1.2s ease-in-out infinite alternate;
+}
+
+@keyframes timeline-pulse { to { opacity: 0.35; } }
+
 .share-fallback {
   width: 100%;
   display: grid;
