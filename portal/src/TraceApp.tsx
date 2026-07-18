@@ -368,10 +368,10 @@ function TraceApp() {
             : <ManageGames projectsReload={projectsResource.reload} firstRun />
             : <>
               {effectivePage === 'overview' && <Overview project={project} projects={projects} projectMenu={projectMenu} setProjectMenu={setProjectMenu} setProjectId={setProjectId} onOpenLogs={() => navigate('logs')} onOpenError={openError} />}
-              {effectivePage === 'players' && <Players project={project} onOpenPlayer={openPlayer} />}
+              {effectivePage === 'players' && <Players project={project} projects={projects} projectMenu={projectMenu} setProjectMenu={setProjectMenu} setProjectId={setProjectId} onOpenPlayer={openPlayer} />}
               {effectivePage === 'player' && selectedPlayer && <PlayerDetails project={project} player={selectedPlayer} pagination={playerSessionPagination} setPagination={setPlayerSessionPagination} onBack={() => navigate('players')} onOpenSession={(sessionId) => openSession('players', sessionId)} />}
-              {effectivePage === 'logs' && <AllLogs project={project} onOpenError={openError} />}
-              {effectivePage === 'feedback' && <Feedback project={project} onOpenSession={(sessionId) => openSession('feedback', sessionId)} />}
+              {effectivePage === 'logs' && <AllLogs project={project} projects={projects} projectMenu={projectMenu} setProjectMenu={setProjectMenu} setProjectId={setProjectId} onOpenError={openError} />}
+              {effectivePage === 'feedback' && <Feedback project={project} projects={projects} projectMenu={projectMenu} setProjectMenu={setProjectMenu} setProjectId={setProjectId} onOpenSession={(sessionId) => openSession('feedback', sessionId)} />}
               {effectivePage === 'games' && <ManageGames projectsReload={projectsResource.reload} view="games" />}
               {effectivePage === 'team' && <ManageGames projectsReload={projectsResource.reload} view="team" />}
               {effectivePage === 'session' && selectedSessionId && <SessionLogs project={project} sessionId={selectedSessionId} selectedEventId={selectedEventId} setSelectedEventId={setSelectedEventId} onBack={contextualBack} backLabel={`Back to ${sessionOrigin === 'players' && selectedPlayer ? selectedPlayer.displayName : sessionOrigin === 'players' ? 'Players' : sessionOrigin === 'feedback' ? 'Feedback' : sessionOrigin === 'error' ? 'Error detail' : sessionOrigin === 'job' ? 'Server job' : 'Logs'}`} announce={announce} />}
@@ -756,7 +756,14 @@ function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: 
   )
 }
 
-function Players({ project, onOpenPlayer }: { project: Project; onOpenPlayer: (player: PlayerSummary) => void }) {
+function Players({ project, projects, projectMenu, setProjectMenu, setProjectId, onOpenPlayer }: {
+  project: Project
+  projects: Project[]
+  projectMenu: boolean
+  setProjectMenu: (open: boolean) => void
+  setProjectId: (id: string) => void
+  onOpenPlayer: (player: PlayerSummary) => void
+}) {
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebouncedValue(query.trim())
   const search = useResource(
@@ -787,7 +794,7 @@ function Players({ project, onOpenPlayer }: { project: Project; onOpenPlayer: (p
 
   return (
     <>
-      <PageTitle title="Player investigation" copy="Review a player’s sessions and open the evidence captured in each one." />
+      <PageTitle title="Player investigation" copy="Review a player’s sessions and open the evidence captured in each one." action={<ProjectSwitcher project={project} projects={projects} open={projectMenu} setOpen={setProjectMenu} setProjectId={setProjectId} />} />
       <form className="search-field" role="search" onSubmit={(event) => event.preventDefault()}>
         <label htmlFor="player-search">Player username or Roblox user ID</label>
         <div><Search size={19} aria-hidden="true" /><input data-player-search id="player-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Username or Roblox user ID" autoComplete="off" />{query && <button type="button" aria-label="Clear player search" onClick={() => setQuery('')}><X size={17} /></button>}</div>
@@ -880,7 +887,14 @@ function PlayerAvatar({ headshot }: { player: PlayerSummary; headshot: string | 
   )
 }
 
-function Feedback({ project, onOpenSession }: { project: Project; onOpenSession: (sessionId: string) => void }) {
+function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId, onOpenSession }: {
+  project: Project
+  projects: Project[]
+  projectMenu: boolean
+  setProjectMenu: (open: boolean) => void
+  setProjectId: (id: string) => void
+  onOpenSession: (sessionId: string) => void
+}) {
   const [pagination, setPagination] = useState<{ page: number; cursors: Array<string | null> }>({ page: 1, cursors: [null] })
   const cursor = pagination.cursors[pagination.page - 1] ?? null
   const resource = useResource(
@@ -894,6 +908,7 @@ function Feedback({ project, onOpenSession }: { project: Project; onOpenSession:
     `${project.id}:feedback-headshots:${playerIds.join(',')}`,
     playerIds.length > 0,
   )
+  useEffect(() => setPagination({ page: 1, cursors: [null] }), [project.id])
   const nextPage = () => {
     const nextCursor = resource.data?.nextCursor
     if (!nextCursor || resource.loading) return
@@ -906,7 +921,7 @@ function Feedback({ project, onOpenSession }: { project: Project; onOpenSession:
   }
 
   return <div className="feedback-page">
-    <PageTitle title="Feedback" copy={`Player-submitted feedback for ${project.name}, connected to the session where it was sent.`} />
+    <PageTitle title="Feedback" copy={`Player-submitted feedback for ${project.name}, connected to the session where it was sent.`} action={<ProjectSwitcher project={project} projects={projects} open={projectMenu} setOpen={setProjectMenu} setProjectId={setProjectId} />} />
     <section className="data-section feedback-section" aria-labelledby="feedback-list-title">
       <div className="section-heading"><div><h2 id="feedback-list-title">Recent responses</h2><p>Newest first · Page {pagination.page}</p></div>{resource.data && <span className="result-count">{entries.length} {entries.length === 1 ? 'response' : 'responses'}</span>}</div>
       {resource.error ? <InlineError error={resource.error} retry={resource.reload} /> : resource.loading && !resource.data ? <RowsLoading /> : entries.length ? <div className="feedback-table" role="table" aria-label="Player feedback">
@@ -1236,7 +1251,14 @@ function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { pro
   </div>
 }
 
-function AllLogs({ project, onOpenError }: { project: Project; onOpenError: (fingerprint: string) => void }) {
+function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId, onOpenError }: {
+  project: Project
+  projects: Project[]
+  projectMenu: boolean
+  setProjectMenu: (open: boolean) => void
+  setProjectId: (id: string) => void
+  onOpenError: (fingerprint: string) => void
+}) {
   const [query, setQuery] = useState('')
   const [timeRangeValue, setTimeRangeValue] = useState('24')
   const [severity, setSeverity] = useState('all')
@@ -1286,7 +1308,7 @@ function AllLogs({ project, onOpenError }: { project: Project; onOpenError: (fin
 
   return (
     <>
-      <PageTitle title="Logs" copy="Review grouped errors and warnings, then open a group to inspect individual occurrences." />
+      <PageTitle title="Logs" copy="Review grouped errors and warnings, then open a group to inspect individual occurrences." action={<ProjectSwitcher project={project} projects={projects} open={projectMenu} setOpen={setProjectMenu} setProjectId={setProjectId} />} />
       <div className="logs-toolbar">
         <div className="compact-search"><label htmlFor="log-search">Filter loaded groups</label><div><Search size={18} /><input id="log-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Message or source" />{query && <button aria-label="Clear group filter" onClick={() => setQuery('')}><X size={16} /></button>}</div></div>
         <LabeledSelect label="Time range" value={timeRangeValue} onChange={setTimeRangeValue} options={[['8', 'Last 8 hours'], ['24', 'Last 24 hours'], ['72', 'Last 3 days']]} />
