@@ -1,6 +1,13 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
+import { createHash } from "node:crypto";
+import type { ArchiveStorage } from "../archive-storage.js";
+import {
+  decodeArchiveChunk,
+  readArchiveManifest,
+  type ArchivedOccurrence,
+} from "../telemetry-archive.js";
 import {
   clampLimit,
   decodeCursor,
@@ -72,10 +79,70 @@ function readEventFilters(query: Record<string, unknown>) {
   };
 }
 
+function utcDatesBetween(startedAt: unknown, endedAt: unknown): string[] {
+  const cursor = new Date(String(startedAt));
+  const end = new Date(String(endedAt));
+  cursor.setUTCHours(0, 0, 0, 0);
+  const dates: string[] = [];
+  while (cursor <= end && dates.length < 5) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+async function readArchivedSessionTimeline(options: {
+  archiveStorage: ArchiveStorage;
+  endedAt: unknown;
+  jobId: string;
+  projectId: string;
+  sessionId: string;
+  severities: string[] | undefined;
+  sides: string[] | undefined;
+  startedAt: unknown;
+}): Promise<ArchivedOccurrence[]> {
+  const startedAtMs = new Date(String(options.startedAt)).getTime();
+  const endedAtMs = new Date(String(options.endedAt)).getTime();
+  const results: ArchivedOccurrence[] = [];
+
+  for (const date of utcDatesBetween(options.startedAt, options.endedAt)) {
+    const manifest = await readArchiveManifest(options.archiveStorage, date);
+    if (!manifest) continue;
+    const chunks = manifest.chunks.filter(
+      (chunk) =>
+        chunk.projectId === options.projectId && chunk.jobId === options.jobId,
+    );
+    for (const chunk of chunks) {
+      const body = await options.archiveStorage.get(chunk.key);
+      if (!body) throw new Error(`missing telemetry archive chunk ${chunk.key}`);
+      const sha256 = createHash("sha256").update(body).digest("hex");
+      if (sha256 !== chunk.sha256) {
+        throw new Error(`telemetry archive checksum mismatch for ${chunk.key}`);
+      }
+      for (const occurrence of decodeArchiveChunk(body)) {
+        const occurredAtMs = Date.parse(occurrence.occurredAt);
+        const belongsToTimeline =
+          occurrence.sessionId === options.sessionId ||
+          (occurrence.side === "server" &&
+            occurredAtMs >= startedAtMs &&
+            occurredAtMs <= endedAtMs);
+        if (!belongsToTimeline) continue;
+        if (options.severities && !options.severities.includes(occurrence.severity)) {
+          continue;
+        }
+        if (options.sides && !options.sides.includes(occurrence.side)) continue;
+        results.push(occurrence);
+      }
+    }
+  }
+  return results;
+}
+
 export async function registerSessionAndLogRoutes(
   app: FastifyInstance,
   pool: Pool,
   authenticate: Authenticator,
+  archiveStorage: ArchiveStorage | null = null,
 ): Promise<void> {
   app.get(
     "/v1/projects/:projectId/players",
@@ -403,7 +470,8 @@ export async function registerSessionAndLogRoutes(
       );
       await requireProjectMembership(pool, request, projectId);
       const sessionExists = await pool.query(
-        `SELECT 1 FROM sessions WHERE project_id = $1 AND id = $2`,
+        `SELECT job_id, started_at, COALESCE(ended_at, now()) AS ended_at
+         FROM sessions WHERE project_id = $1 AND id = $2`,
         [projectId, sessionId],
       );
       if (sessionExists.rowCount !== 1) {
@@ -526,8 +594,11 @@ export async function registerSessionAndLogRoutes(
            JOIN occurrences server_event
              ON server_event.project_id = ${project}
             AND server_event.job_id = ts.job_id
-            AND server_event.session_id IS NULL
+            AND server_event.session_id IS DISTINCT FROM ts.id
             AND server_event.occurred_at BETWEEN ts.started_at AND ts.ended_at
+           JOIN error_groups server_group
+             ON server_group.id = server_event.group_id
+            AND server_group.source = 'server'
            LEFT JOIN LATERAL (
              SELECT
                client_event.id,
@@ -581,7 +652,7 @@ export async function registerSessionAndLogRoutes(
       const rows = includeAllServer
         ? result.rows
         : result.rows.slice(0, resultLimit);
-      const data = rows.map((row) => {
+      let data = rows.map((row) => {
         const occurrence = mapOccurrence(row);
         if (row.related_occurrence_id) {
           return {
@@ -596,6 +667,59 @@ export async function registerSessionAndLogRoutes(
         }
         return occurrence;
       });
+      if (archiveStorage && includeAllServer) {
+        const targetSession = sessionExists.rows[0]!;
+        const archived = await readArchivedSessionTimeline({
+          archiveStorage,
+          projectId,
+          sessionId,
+          jobId: String(targetSession.job_id),
+          startedAt: targetSession.started_at,
+          endedAt: targetSession.ended_at,
+          severities,
+          sides,
+        });
+        const byId = new Map(data.map((occurrence) => [occurrence.id, occurrence]));
+        for (const occurrence of archived) byId.set(occurrence.id, occurrence);
+        data = [...byId.values()].sort(
+          (left, right) =>
+            Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
+            left.id.localeCompare(right.id),
+        );
+        const clientOccurrences = data.filter(
+          (occurrence) => occurrence.side === "client",
+        );
+        data = data.map((occurrence) => {
+          if (
+            occurrence.side !== "server" ||
+            occurrence.sessionId === sessionId ||
+            "correlation" in occurrence
+          ) {
+            return occurrence;
+          }
+          const occurredAt = Date.parse(occurrence.occurredAt);
+          const nearest = clientOccurrences
+            .map((clientOccurrence) => ({
+              occurrence: clientOccurrence,
+              deltaMs: Math.abs(
+                Date.parse(clientOccurrence.occurredAt) - occurredAt,
+              ),
+            }))
+            .filter((candidate) => candidate.deltaMs <= 2_000)
+            .sort((left, right) => left.deltaMs - right.deltaMs)[0];
+          return nearest
+            ? {
+                ...occurrence,
+                correlation: {
+                  kind: "time_window" as const,
+                  confidence: "low" as const,
+                  relatedOccurrenceId: nearest.occurrence.id,
+                  deltaMs: nearest.deltaMs,
+                },
+              }
+            : occurrence;
+        });
+      }
       const last = rows.at(-1);
       cache(reply);
       return {

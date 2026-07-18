@@ -14,6 +14,7 @@ import { findProjectForApiKey, ingestBatch, verifyProjectUniverse } from "./repo
 import { ReadApiError } from "./read/http.js";
 import { registerReadApi } from "./read/index.js";
 import type { RobloxOAuthConfig } from "./read/account.js";
+import type { ArchiveStorage } from "./archive-storage.js";
 
 const MAX_EVENT_AGE_MS = 24 * 60 * 60 * 1_000;
 const MAX_FUTURE_SKEW_MS = 10 * 60 * 1_000;
@@ -68,6 +69,7 @@ export async function buildApp(
   webOrigin = "http://localhost:5173",
   oauth: Omit<RobloxOAuthConfig, "webOrigin"> | null = null,
   readPool: Pool = pool,
+  archiveStorage: ArchiveStorage | null = null,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: true,
@@ -207,7 +209,12 @@ export async function buildApp(
     },
   );
 
-  await registerReadApi(app, readPool, oauth ? { ...oauth, webOrigin } : null);
+  await registerReadApi(
+    app,
+    readPool,
+    oauth ? { ...oauth, webOrigin } : null,
+    archiveStorage,
+  );
 
   return app;
 }

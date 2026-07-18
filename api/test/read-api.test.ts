@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import type { Pool } from "pg";
 import type { FastifyRequest } from "fastify";
+import type { ArchiveStorage } from "../src/archive-storage.js";
 import { buildApp, ingestionRateLimitKey } from "../src/app.js";
 import { findProjectForApiKey, verifyProjectUniverse } from "../src/repository.js";
 import {
@@ -268,8 +270,17 @@ test("session timelines include every server event across the full session", asy
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
-      if (sql.includes("SELECT 1 FROM sessions")) {
-        return { rows: [{ exists: 1 }], rowCount: 1 };
+      if (sql.includes("SELECT job_id, started_at")) {
+        return {
+          rows: [
+            {
+              job_id: "40000000-0000-4000-8000-000000000001",
+              started_at: "2026-07-18T12:00:00.000Z",
+              ended_at: "2026-07-18T13:00:00.000Z",
+            },
+          ],
+          rowCount: 1,
+        };
       }
       if (sql.includes("WITH target_session AS")) {
         timelineSql = sql;
@@ -289,7 +300,111 @@ test("session timelines include every server event across the full session", asy
   assert.equal(response.statusCode, 200);
   assert.match(timelineSql, /COALESCE\(ended_at, now\(\)\)/);
   assert.match(timelineSql, /LEFT JOIN LATERAL/);
+  assert.match(timelineSql, /server_event\.session_id IS DISTINCT FROM ts\.id/);
+  assert.match(timelineSql, /server_group\.source = 'server'/);
   assert.match(timelineSql, /UNION SELECT \* FROM filtered WHERE source = 'server'/);
+  await app.close();
+});
+
+test("session timelines merge verified archived server events", async () => {
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const sessionId = "30000000-0000-4000-8000-000000000001";
+  const jobId = "40000000-0000-4000-8000-000000000001";
+  const occurrence = {
+    id: "50000000-0000-4000-8000-000000000001",
+    projectId,
+    occurredAt: "2026-07-17T12:30:00.000Z",
+    lastOccurredAt: "2026-07-17T12:30:00.000Z",
+    repeatCount: 1,
+    receivedAt: "2026-07-17T12:30:01.000Z",
+    severity: "error",
+    side: "server",
+    message: "archived server error",
+    source: null,
+    stackTrace: null,
+    fingerprint: "archived-fingerprint",
+    serverJobId: jobId,
+    sessionId: null,
+    player: null,
+    attributes: {},
+  };
+  const chunk = gzipSync(
+    JSON.stringify({ version: 1, occurrences: [occurrence] }),
+  );
+  const chunkSha256 = createHash("sha256").update(chunk).digest("hex");
+  const manifest = Buffer.from(
+    JSON.stringify({
+      version: 1,
+      partition: "occurrences_2026_07_17",
+      partitionDate: "2026-07-17",
+      archivedAt: "2026-07-18T12:00:00.000Z",
+      occurrenceCount: 1,
+      chunks: [
+        {
+          bytes: chunk.byteLength,
+          count: 1,
+          firstOccurredAt: occurrence.occurredAt,
+          lastOccurredAt: occurrence.lastOccurredAt,
+          jobId,
+          key: "archive/chunk.json.gz",
+          projectId,
+          sha256: chunkSha256,
+        },
+      ],
+    }),
+  );
+  const archiveStorage = {
+    key: (relativeKey: string) => `archive/${relativeKey}`,
+    get: async (key: string) =>
+      key.endsWith("manifest.json") ? manifest : key.endsWith("chunk.json.gz") ? chunk : null,
+  } as unknown as ArchiveStorage;
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{ id: "10000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT job_id, started_at")) {
+        return {
+          rows: [
+            {
+              job_id: jobId,
+              started_at: "2026-07-17T12:00:00.000Z",
+              ended_at: "2026-07-17T13:00:00.000Z",
+            },
+          ],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("WITH target_session AS")) {
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "http://localhost:5173",
+    null,
+    pool,
+    archiveStorage,
+  );
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/projects/${projectId}/sessions/${sessionId}/timeline?includeAllServer=true`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().data.map((item: { id: string }) => item.id), [
+    occurrence.id,
+  ]);
   await app.close();
 });
 

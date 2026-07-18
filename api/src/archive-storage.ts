@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
@@ -13,6 +14,12 @@ export type ArchiveProbeResult = {
   bucket: string;
   objectKey: string;
   provider: "s3" | "spaces" | "r2";
+  sha256: string;
+};
+
+export type VerifiedArchiveObject = {
+  bytes: number;
+  objectKey: string;
   sha256: string;
 };
 
@@ -100,6 +107,72 @@ export class ArchiveStorage {
         .send(new DeleteObjectCommand({ Bucket: this.#bucket, Key: objectKey }))
         .catch(() => undefined);
     }
+  }
+
+  async putVerified(
+    objectKey: string,
+    body: Buffer,
+    options: { contentEncoding?: string; contentType: string },
+  ): Promise<VerifiedArchiveObject> {
+    const sha256 = createHash("sha256").update(body).digest("hex");
+    await this.#client.send(
+      new PutObjectCommand({
+        Bucket: this.#bucket,
+        Key: objectKey,
+        Body: body,
+        ContentLength: body.byteLength,
+        ContentType: options.contentType,
+        ContentEncoding: options.contentEncoding,
+        Metadata: { sha256 },
+      }),
+    );
+
+    const stored = await this.#client.send(
+      new HeadObjectCommand({ Bucket: this.#bucket, Key: objectKey }),
+    );
+    if (
+      stored.Metadata?.sha256 !== sha256 ||
+      stored.ContentLength !== body.byteLength
+    ) {
+      throw new Error(`archive object verification failed for ${objectKey}`);
+    }
+
+    return { bytes: body.byteLength, objectKey, sha256 };
+  }
+
+  async verifyObject(
+    objectKey: string,
+    expectedSha256: string,
+    expectedBytes?: number,
+  ): Promise<void> {
+    const stored = await this.#client.send(
+      new HeadObjectCommand({ Bucket: this.#bucket, Key: objectKey }),
+    );
+    if (
+      stored.Metadata?.sha256 !== expectedSha256 ||
+      (expectedBytes !== undefined && stored.ContentLength !== expectedBytes)
+    ) {
+      throw new Error(`archive object verification failed for ${objectKey}`);
+    }
+  }
+
+  async get(objectKey: string): Promise<Buffer | null> {
+    try {
+      const response = await this.#client.send(
+        new GetObjectCommand({ Bucket: this.#bucket, Key: objectKey }),
+      );
+      if (!response.Body) return null;
+      return Buffer.from(await response.Body.transformToByteArray());
+    } catch (error) {
+      const statusCode = (error as { $metadata?: { httpStatusCode?: number } })
+        .$metadata?.httpStatusCode;
+      if (statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  key(relativeKey: string): string {
+    return `${this.#prefix}${relativeKey.replace(/^\/+/, "")}`;
   }
 
   close(): void {
