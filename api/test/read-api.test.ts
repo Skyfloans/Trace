@@ -186,8 +186,10 @@ test("valid ingestion keys reuse a short-lived project lookup", async () => {
 
 test("the first matching ingestion verifies a linked universe", async () => {
   const projectId = "20000000-0000-4000-8000-000000000001";
+  let queries = 0;
   const pool = {
     query: async (sql: string, values: unknown[]) => {
+      queries += 1;
       assert.match(sql, /roblox_universe_id/);
       assert.deepEqual(values, [projectId, "10395108329"]);
       return { rows: [{ matches: true }], rowCount: 1 };
@@ -195,6 +197,8 @@ test("the first matching ingestion verifies a linked universe", async () => {
   } as unknown as Pool;
 
   assert.equal(await verifyProjectUniverse(pool, projectId, "10395108329"), true);
+  assert.equal(await verifyProjectUniverse(pool, projectId, "10395108329"), true);
+  assert.equal(queries, 1);
 });
 
 test("ingestion from a different universe cannot verify a linked game", async () => {

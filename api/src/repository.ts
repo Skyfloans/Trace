@@ -14,12 +14,21 @@ type CachedProject = {
   projectId: string;
 };
 
+type CachedUniverseVerification = {
+  expiresAt: number;
+  matches: boolean;
+};
+
 type IngestionAuthCache = {
   projects: Map<string, CachedProject>;
   loads: Map<string, Promise<string | null>>;
+  universes: Map<string, CachedUniverseVerification>;
+  universeLoads: Map<string, Promise<boolean>>;
 };
 
 const INGESTION_AUTH_CACHE_MS = 15_000;
+const UNIVERSE_VERIFICATION_CACHE_MS = 5 * 60_000;
+const FAILED_UNIVERSE_VERIFICATION_CACHE_MS = 10_000;
 const ingestionAuthCaches = new WeakMap<Pool, IngestionAuthCache>();
 
 function getIngestionAuthCache(pool: Pool): IngestionAuthCache {
@@ -29,6 +38,8 @@ function getIngestionAuthCache(pool: Pool): IngestionAuthCache {
   const created = {
     projects: new Map<string, CachedProject>(),
     loads: new Map<string, Promise<string | null>>(),
+    universes: new Map<string, CachedUniverseVerification>(),
+    universeLoads: new Map<string, Promise<boolean>>(),
   };
   ingestionAuthCaches.set(pool, created);
   return created;
@@ -77,14 +88,39 @@ export async function verifyProjectUniverse(
   projectId: string,
   universeId: string,
 ): Promise<boolean> {
-  const result = await pool.query<{ matches: boolean }>(
-    `SELECT EXISTS (
-       SELECT 1 FROM projects
-       WHERE id = $1 AND roblox_universe_id = $2
-     ) AS matches`,
-    [projectId, universeId],
-  );
-  return result.rows[0]?.matches ?? false;
+  const cache = getIngestionAuthCache(pool);
+  const cacheKey = `${projectId}:${universeId}`;
+  const cached = cache.universes.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.matches;
+  if (cached) cache.universes.delete(cacheKey);
+
+  const pending = cache.universeLoads.get(cacheKey);
+  if (pending) return pending;
+
+  const load = pool
+    .query<{ matches: boolean }>(
+      `SELECT EXISTS (
+         SELECT 1 FROM projects
+         WHERE id = $1 AND roblox_universe_id = $2
+       ) AS matches`,
+      [projectId, universeId],
+    )
+    .then((result) => {
+      const matches = result.rows[0]?.matches ?? false;
+      cache.universes.set(cacheKey, {
+        expiresAt:
+          Date.now() +
+          (matches
+            ? UNIVERSE_VERIFICATION_CACHE_MS
+            : FAILED_UNIVERSE_VERIFICATION_CACHE_MS),
+        matches,
+      });
+      return matches;
+    })
+    .finally(() => cache.universeLoads.delete(cacheKey));
+
+  cache.universeLoads.set(cacheKey, load);
+  return load;
 }
 
 async function upsertJob(
