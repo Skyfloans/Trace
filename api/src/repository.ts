@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { withTransaction } from "./db.js";
 import { fingerprintEvent } from "./fingerprint.js";
-import type { IngestBatch } from "./schema.js";
+import type { IngestBatch, IngestEvent } from "./schema.js";
 
 type IngestResult = {
   accepted: number;
@@ -30,6 +30,19 @@ const INGESTION_AUTH_CACHE_MS = 15_000;
 const UNIVERSE_VERIFICATION_CACHE_MS = 5 * 60_000;
 const FAILED_UNIVERSE_VERIFICATION_CACHE_MS = 10_000;
 const ingestionAuthCaches = new WeakMap<Pool, IngestionAuthCache>();
+
+export function compactOccurrenceContext(
+  context: IngestEvent["context"],
+): Record<string, unknown> | null {
+  if (!context) return null;
+
+  const compact = Object.fromEntries(
+    Object.entries(context).filter(
+      ([key]) => key !== "clientReported" && key !== "device",
+    ),
+  );
+  return Object.keys(compact).length > 0 ? compact : null;
+}
 
 function getIngestionAuthCache(pool: Pool): IngestionAuthCache {
   const existing = ingestionAuthCaches.get(pool);
@@ -136,7 +149,7 @@ async function upsertJob(
          AND roblox_universe_id IS NULL
          AND $10::text IS NOT NULL
        RETURNING id
-     )
+     ), upserted AS (
      INSERT INTO jobs (
        id, project_id, roblox_job_id, place_id, region, release,
        started_at, ended_at, last_seen_at
@@ -147,7 +160,17 @@ async function upsertJob(
          release = COALESCE(EXCLUDED.release, jobs.release),
          ended_at = COALESCE(EXCLUDED.ended_at, jobs.ended_at),
          last_seen_at = GREATEST(EXCLUDED.last_seen_at, jobs.last_seen_at)
-     RETURNING id`,
+     WHERE jobs.region IS DISTINCT FROM COALESCE(EXCLUDED.region, jobs.region)
+        OR jobs.release IS DISTINCT FROM COALESCE(EXCLUDED.release, jobs.release)
+        OR jobs.ended_at IS DISTINCT FROM COALESCE(EXCLUDED.ended_at, jobs.ended_at)
+        OR jobs.last_seen_at < EXCLUDED.last_seen_at
+     RETURNING id
+     )
+     SELECT id FROM upserted
+     UNION ALL
+     SELECT id FROM jobs
+     WHERE project_id = $2 AND roblox_job_id = $3
+     LIMIT 1`,
     [
       batch.job.id,
       projectId,
@@ -313,8 +336,46 @@ async function insertEvents(
     });
   }
 
+  const groupInputs = [...groups.values()].sort((left, right) =>
+    left.fingerprint.localeCompare(right.fingerprint),
+  );
+  const groupInputJson = JSON.stringify(
+    groupInputs.map((group) => ({
+      fingerprint: group.fingerprint,
+      source: group.source,
+      level: group.level,
+      source_script: group.sourceScript,
+      normalized_message: group.normalizedMessage,
+      normalized_stack: group.normalizedStack,
+      first_seen_at: group.firstSeenAt,
+      last_seen_at: group.lastSeenAt,
+    })),
+  );
+
+  // Different Roblox servers frequently report the same group set. Acquire
+  // deterministic transaction locks so their row updates cannot deadlock.
+  await client.query(
+    `SELECT pg_advisory_xact_lock(
+       hashtextextended($1::text || ':' || ordered.fingerprint, 0)
+     )
+     FROM (
+       SELECT DISTINCT input.fingerprint
+       FROM jsonb_to_recordset($2::jsonb) AS input(fingerprint text)
+       ORDER BY input.fingerprint
+     ) ordered`,
+    [projectId, groupInputJson],
+  );
+
   const groupResult = await client.query<{ id: string; fingerprint: string }>(
-    `INSERT INTO error_groups (
+    `WITH input AS (
+       SELECT *
+       FROM jsonb_to_recordset($2::jsonb) AS item(
+         fingerprint text, source text, level text, source_script text,
+         normalized_message text, normalized_stack text,
+         first_seen_at timestamptz, last_seen_at timestamptz
+       )
+     ), upserted AS (
+     INSERT INTO error_groups (
        project_id, fingerprint, source, level, source_script,
        normalized_message, normalized_stack,
        first_seen_at, last_seen_at, occurrence_count
@@ -323,11 +384,8 @@ async function insertEvents(
        $1, input.fingerprint, input.source::log_source, input.level::log_level,
        input.source_script, input.normalized_message, input.normalized_stack,
        input.first_seen_at, input.last_seen_at, 0
-     FROM jsonb_to_recordset($2::jsonb) AS input(
-       fingerprint text, source text, level text, source_script text,
-       normalized_message text, normalized_stack text,
-       first_seen_at timestamptz, last_seen_at timestamptz
-     )
+     FROM input
+     ORDER BY input.fingerprint
      ON CONFLICT (project_id, fingerprint) DO UPDATE
      SET source_script = COALESCE(
        error_groups.source_script,
@@ -337,22 +395,17 @@ async function insertEvents(
            error_groups.normalized_stack,
            EXCLUDED.normalized_stack
          )
-     RETURNING id, fingerprint`,
-    [
-      projectId,
-      JSON.stringify(
-        [...groups.values()].map((group) => ({
-          fingerprint: group.fingerprint,
-          source: group.source,
-          level: group.level,
-          source_script: group.sourceScript,
-          normalized_message: group.normalizedMessage,
-          normalized_stack: group.normalizedStack,
-          first_seen_at: group.firstSeenAt,
-          last_seen_at: group.lastSeenAt,
-        })),
-      ),
-    ],
+     WHERE (error_groups.source_script IS NULL AND EXCLUDED.source_script IS NOT NULL)
+        OR (error_groups.normalized_stack IS NULL AND EXCLUDED.normalized_stack IS NOT NULL)
+     RETURNING id, fingerprint
+     )
+     SELECT id, fingerprint FROM upserted
+     UNION
+     SELECT groups.id, groups.fingerprint
+     FROM error_groups groups
+     JOIN input ON input.fingerprint = groups.fingerprint
+     WHERE groups.project_id = $1`,
+    [projectId, groupInputJson],
   );
   const groupIds = new Map(
     groupResult.rows.map((row) => [row.fingerprint, row.id]),
@@ -369,9 +422,11 @@ async function insertEvents(
       occurred_at: event.occurredAt,
       last_occurred_at: event.lastOccurredAt ?? event.occurredAt,
       repeat_count: event.repeatCount,
-      original_message: event.message,
-      original_stack: event.stack ?? null,
-      context: event.context ?? null,
+      original_message:
+        event.message === normalized.normalizedMessage ? null : event.message,
+      original_stack:
+        event.stack === normalized.normalizedStack ? null : (event.stack ?? null),
+      context: compactOccurrenceContext(event.context),
     };
   });
   const logicalEventCount = occurrences.reduce(
@@ -488,6 +543,12 @@ export async function ingestBatch(
   batch: IngestBatch,
 ): Promise<IngestResult> {
   const ingest = () => withTransaction(pool, async (client) => {
+    await client.query(
+      `SELECT pg_advisory_xact_lock(
+         hashtextextended('trace-job:' || $1::text || ':' || $2::text, 0)
+       )`,
+      [projectId, batch.job.robloxJobId],
+    );
     const jobId = await upsertJob(client, projectId, batch);
     await upsertSessions(client, projectId, jobId, batch);
     const result = await insertEvents(client, projectId, jobId, batch);

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { fingerprintEvent } from "../src/fingerprint.js";
+import { compactOccurrenceContext } from "../src/repository.js";
 import { ingestBatchSchema } from "../src/schema.js";
 
 function makeBatch(playerName: string) {
@@ -80,6 +81,29 @@ test("player names do not create distinct fingerprints", () => {
   assert.equal(
     first.normalizedSourceScript,
     "Players.<PLAYER_NAME>.PlayerScripts.Test",
+  );
+});
+
+test("server events may link to an included player session", () => {
+  const batch = makeBatch("Skyfloans");
+  batch.events[0]!.source = "server";
+
+  const parsed = ingestBatchSchema.parse(batch);
+  assert.equal(parsed.events[0]!.sessionId, parsed.sessions[0]!.id);
+});
+
+test("redundant client occurrence context is discarded", () => {
+  assert.equal(
+    compactOccurrenceContext({ clientReported: true, device: "mobile" }),
+    null,
+  );
+  assert.deepEqual(
+    compactOccurrenceContext({
+      clientReported: true,
+      device: "mobile",
+      droppedClientLogs: 4,
+    }),
+    { droppedClientLogs: 4 },
   );
 });
 

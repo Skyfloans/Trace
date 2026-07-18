@@ -1,3 +1,4 @@
+import { createArchiveStorage } from "./archive-storage.js";
 import { buildApp } from "./app.js";
 import { config } from "./config.js";
 import { createPool } from "./db.js";
@@ -15,6 +16,7 @@ const oauth =
       }
     : null;
 const app = await buildApp(ingestionPool, config.WEB_ORIGIN, oauth, readPool);
+const archiveStorage = createArchiveStorage(config);
 let maintenanceTimer: NodeJS.Timeout | undefined;
 
 async function runMaintenance(): Promise<void> {
@@ -28,11 +30,30 @@ app.addHook("onClose", async () => {
   if (maintenanceTimer) {
     clearInterval(maintenanceTimer);
   }
+  archiveStorage?.close();
   await Promise.all([ingestionPool.end(), readPool.end()]);
 });
 
 try {
   await runMaintenance();
+
+  if (archiveStorage) {
+    try {
+      const probe = await archiveStorage.verifyReadWrite();
+      app.log.info(
+        {
+          archiveBucket: probe.bucket,
+          archiveProvider: probe.provider,
+          archiveProbeSha256: probe.sha256,
+        },
+        "archive storage read/write probe passed",
+      );
+    } catch (error) {
+      if (config.ARCHIVE_ENABLED) throw error;
+      app.log.warn(error, "archive storage probe failed; archival remains disabled");
+    }
+  }
+
   await app.listen({ host: config.HOST, port: config.PORT });
 
   maintenanceTimer = setInterval(() => {

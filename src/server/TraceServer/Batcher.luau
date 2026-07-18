@@ -294,7 +294,6 @@ function Batcher:Flush(force: boolean?): boolean
 	if not force and os.clock() < self._nextAttemptAt then return false end
 
 	self._flushing = true
-	self._job.lastSeenAt = nowIso()
 
 	local eventLimit = self._config.MaxEventsPerBatch
 	local batch, eventCount, sessionVersions, jobVersion = self:_buildBatch(eventLimit)

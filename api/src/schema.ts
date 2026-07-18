@@ -94,22 +94,19 @@ export const ingestBatchSchema = z
         });
       }
 
-      if (
-        event.source === "client" &&
-        (!event.sessionId || !sessionIds.has(event.sessionId))
-      ) {
+      if (event.source === "client" && !event.sessionId) {
         context.addIssue({
           code: "custom",
           path: ["events", index, "sessionId"],
-          message: "Client events must reference a session included in the batch",
+          message: "Client events must reference a session",
         });
       }
 
-      if (event.source === "server" && event.sessionId) {
+      if (event.sessionId && !sessionIds.has(event.sessionId)) {
         context.addIssue({
           code: "custom",
           path: ["events", index, "sessionId"],
-          message: "Server events belong to the job and cannot reference a session",
+          message: "Event sessions must be included in the batch",
         });
       }
     }
