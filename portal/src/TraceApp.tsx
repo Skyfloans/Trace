@@ -138,6 +138,7 @@ function useResource<T>(
   const [loading, setLoading] = useState(enabled)
   const [revision, setRevision] = useState(0)
   const loadRef = useRef(load)
+  const dataKeyRef = useRef(key)
   loadRef.current = load
 
   useEffect(() => {
@@ -147,6 +148,7 @@ function useResource<T>(
     }
     let active = true
     const cached = readCachedResource<T>(key)
+    dataKeyRef.current = key
     if (cached) {
       setData(cached)
       setError(null)
@@ -154,6 +156,7 @@ function useResource<T>(
       return
     }
 
+    setData(null)
     setLoading(true)
     setError(null)
     loadResource(key, loadRef.current)
@@ -171,10 +174,12 @@ function useResource<T>(
     }
   }, [enabled, key, revision])
 
+  const keyChanged = dataKeyRef.current !== key
+  const nextKeyCached = keyChanged ? readCachedResource<T>(key) : null
   return {
-    data,
-    error,
-    loading,
+    data: keyChanged ? nextKeyCached : data,
+    error: keyChanged ? null : error,
+    loading: enabled && (keyChanged ? !nextKeyCached : loading),
     reload: () => {
       resourceCache.delete(key)
       setRevision((value) => value + 1)
@@ -1384,8 +1389,9 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
   }
 
   if (session.error) return <><BackButton onClick={onBack} label={backLabel} /><InlineError error={session.error} retry={session.reload} /></>
-  if (timeline.error) return <><BackButton onClick={onBack} label={backLabel} /><InlineError error={timeline.error} retry={timeline.reload} /></>
-  if (!sessionData || !timeline.data) return <><BackButton onClick={onBack} label={backLabel} /><RowsLoading /></>
+  if (!sessionData) return <><BackButton onClick={onBack} label={backLabel} /><RowsLoading /></>
+
+  const timelinePending = timeline.loading && !timeline.data
 
   return (
     <div className="session-page">
@@ -1393,21 +1399,27 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
       <PageTitle title="Session logs" copy={`${sessionData.player.username} · ${project.name} · ${sessionData.serverJob.region ?? 'Unknown region'} · ${shortId(sessionData.serverJob.robloxJobId)}`} action={<div className="session-duration"><Clock3 size={16} />{formatDuration(sessionData.durationMs)}</div>} />
       <div className="session-toolbar">
         <div className="view-toggle" aria-label="Log view"><button aria-pressed={mode === 'split'} onClick={() => setMode('split')}><Columns2 size={16} />Split</button><button aria-pressed={mode === 'client'} onClick={() => setMode('client')}><CircleUserRound size={16} />Client</button><button aria-pressed={mode === 'server'} onClick={() => setMode('server')}><Server size={16} />Server</button></div>
-        <div className="session-actions"><button aria-expanded={findOpen} onClick={() => setFindOpen(!findOpen)}><Search size={16} />Find</button><LabeledSelect label="Level" value={level} onChange={setLevel} options={[['all', 'All'], ['error', 'Error'], ['warning', 'Warning']]} compact icon={<ListFilter size={16} aria-hidden="true" />} /><button onClick={() => setSelectedEventId(events.find((event) => event.severity === 'error')?.id ?? events[0]?.id ?? null)}><Clock3 size={16} />First error</button></div>
+        <div className="session-actions"><button aria-expanded={findOpen} onClick={() => setFindOpen(!findOpen)}><Search size={16} />Find</button><LabeledSelect label="Level" value={level} onChange={setLevel} options={[['all', 'All'], ['error', 'Error'], ['warning', 'Warning']]} compact icon={<ListFilter size={16} aria-hidden="true" />} /><button disabled={timelinePending} onClick={() => setSelectedEventId(events.find((event) => event.severity === 'error')?.id ?? events[0]?.id ?? null)}><Clock3 size={16} />First error</button></div>
       </div>
       {findOpen && <div className="session-find"><label htmlFor="session-find">Find in this session</label><input autoFocus id="session-find" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search message, source, or stack" /><button aria-label="Close find" onClick={() => { setFindOpen(false); setQuery('') }}><X size={17} /></button></div>}
-      {selected ? <section className="evidence-strip" aria-labelledby="selected-evidence-title">
+      {timeline.error ? <InlineError error={timeline.error} retry={timeline.reload} title="Could not load session events" /> : timelinePending ? <SessionTimelineLoading mode={mode} session={sessionData} /> : <>{selected ? <section className="evidence-strip" aria-labelledby="selected-evidence-title">
         <div><span>Selected evidence</span><h2 id="selected-evidence-title">{selected.message}</h2><p>{formatPreciseTime(selected.occurredAt)} · {selected.source ?? 'Unknown source'}{selected.correlation ? ` · correlated within ${Math.round(selected.correlation.deltaMs)} ms (${selected.correlation.confidence} confidence)` : ''}</p>{selected.stackTrace && <pre>{selected.stackTrace}</pre>}</div>
         <div><button onClick={copyEvidence}><Copy size={16} />Copy</button><button onClick={exportEvidence}><Download size={16} />Export JSON</button><button onClick={shareEvidence}><Share2 size={16} />Share</button></div>
         {shareFallback && <label className="share-fallback">Share link<input readOnly value={shareFallback} onFocus={(event) => event.currentTarget.select()} /></label>}
       </section> : <PageStatus compact title="No events in this session" copy="No timeline events match the current filters." />}
       <div className={`log-viewers mode-${mode}`}>{(mode === 'split' || mode === 'client') && <LogPane type="client" events={clientEvents} session={sessionData} selectedEventId={selected?.id ?? null} onSelect={setSelectedEventId} />}{(mode === 'split' || mode === 'server') && <LogPane type="server" events={serverEvents} session={sessionData} selectedEventId={selected?.id ?? null} onSelect={setSelectedEventId} />}</div>
+      </>}
     </div>
   )
 }
 
-function LogPane({ type, events, session, selectedEventId, onSelect }: { type: LogSide; events: LogOccurrence[]; session: Session; selectedEventId: string | null; onSelect: (id: string) => void }) {
-  return <section className={`log-pane ${type}`} aria-label={`${type} logs`}><header><span className="pane-icon">{type === 'client' ? <CircleUserRound size={17} /> : <Server size={17} />}</span><div><strong>{type === 'client' ? 'Client logs' : 'Server logs'}</strong><small>{type === 'client' ? `${session.player.username} · ${session.device ?? session.platform ?? 'Unknown device'}` : `${session.serverJob.region ?? 'Unknown region'} · ${shortId(session.serverJob.robloxJobId)}`}</small></div></header><div className="log-lines">{events.length ? events.map((event, index) => <button aria-pressed={selectedEventId === event.id} className={selectedEventId === event.id ? 'selected' : ''} key={event.id} onClick={() => onSelect(event.id)} title={event.source ?? undefined}><span className="line-number">{index + 1}</span><span className="log-time">{formatPreciseTime(event.occurredAt)}</span><span className={`log-level ${event.severity}`}>{event.severity === 'trace' ? '↳' : event.severity}</span><span className="log-text">{event.message}</span></button>) : <div className="log-empty">No {type} events match these filters.</div>}</div></section>
+function SessionTimelineLoading({ mode, session }: { mode: LogMode; session: Session }) {
+  const noop = () => undefined
+  return <><section className="evidence-strip timeline-evidence-loading" aria-label="Loading session evidence" aria-busy="true"><div><span>Loading session evidence</span><div className="timeline-skeleton-lines"><i /><i /></div></div></section><div className={`log-viewers mode-${mode}`}>{(mode === 'split' || mode === 'client') && <LogPane type="client" events={[]} session={session} selectedEventId={null} onSelect={noop} loading />}{(mode === 'split' || mode === 'server') && <LogPane type="server" events={[]} session={session} selectedEventId={null} onSelect={noop} loading />}</div></>
+}
+
+function LogPane({ type, events, session, selectedEventId, onSelect, loading = false }: { type: LogSide; events: LogOccurrence[]; session: Session; selectedEventId: string | null; onSelect: (id: string) => void; loading?: boolean }) {
+  return <section className={`log-pane ${type}`} aria-label={`${type} logs`} aria-busy={loading}><header><span className="pane-icon">{type === 'client' ? <CircleUserRound size={17} /> : <Server size={17} />}</span><div><strong>{type === 'client' ? 'Client logs' : 'Server logs'}</strong><small>{type === 'client' ? `${session.player.username} · ${session.device ?? session.platform ?? 'Unknown device'}` : `${session.serverJob.region ?? 'Unknown region'} · ${shortId(session.serverJob.robloxJobId)}`}</small></div></header><div className="log-lines">{loading ? <RowsLoading /> : events.length ? events.map((event, index) => <button aria-pressed={selectedEventId === event.id} className={selectedEventId === event.id ? 'selected' : ''} key={event.id} onClick={() => onSelect(event.id)} title={event.source ?? undefined}><span className="line-number">{index + 1}</span><span className="log-time">{formatPreciseTime(event.occurredAt)}</span><span className={`log-level ${event.severity}`}>{event.severity === 'trace' ? '↳' : event.severity}</span><span className="log-text">{event.message}</span></button>) : <div className="log-empty">No {type} events match these filters.</div>}</div></section>
 }
 
 function parseErrorTitle(title: string, fallbackSource: string | null) {

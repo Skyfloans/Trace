@@ -1021,6 +1021,19 @@ kbd {
 .evidence-strip p { margin: 0; color: var(--muted); font-size: 12px; }
 .evidence-strip button { border: 1px solid var(--line); }
 
+.timeline-evidence-loading { min-height: 104px; }
+.timeline-evidence-loading > div { width: min(720px, 100%); }
+.timeline-skeleton-lines { display: grid; gap: 8px; margin-top: 10px; }
+.timeline-skeleton-lines i {
+  display: block;
+  height: 14px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--surface-raised) 20%, #263542 50%, var(--surface-raised) 80%);
+  background-size: 220% 100%;
+  animation: loading-row 1.3s ease-in-out infinite;
+}
+.timeline-skeleton-lines i:last-child { width: 62%; animation-delay: 100ms; }
+
 .share-fallback {
   width: 100%;
   display: grid;
@@ -1083,6 +1096,7 @@ kbd {
 .log-pane header small { margin-top: 3px; color: #a6b4be; font-size: 12px; }
 
 .log-lines { min-height: 0; flex: 1; overflow: auto; padding: 7px; }
+.log-lines > .rows-loading { min-height: 100%; padding: 8px; }
 
 .log-lines > button {
   width: 100%;
