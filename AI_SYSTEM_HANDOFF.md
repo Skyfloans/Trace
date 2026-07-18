@@ -506,29 +506,30 @@ the former fingerprint naturally expire after three days.
 Trace captures most uncaught Luau errors, including typical `error()`,
 `assert()`, event callback, coroutine, and `task.spawn` failures.
 
-It does not guarantee every Roblox-generated error.
+It also captures Roblox engine/service errors emitted only through
+`LogService.MessageOut`. `MessageError` entries are held briefly so they can be
+paired with `ScriptContext.Error` when both signals describe the same failure.
+The richer `ScriptContext` event wins in that case; otherwise the engine-only
+error is emitted after the short fallback window. Output stack blocks between
+`Stack Begin` and `Stack End` are attached when Roblox provides them.
+
+It still cannot guarantee every Roblox-generated error.
 
 Known gaps:
 
-1. `LogCollector` currently ignores every `Enum.MessageType.MessageError` to
-   avoid duplicates with `ScriptContext.Error`. Engine/service errors emitted
-   only through `LogService` may therefore be lost.
-2. When the 1,000-event queue is full, `Batcher:AddEvent` returns `false`, but
+1. When the 1,000-event queue is full, `Batcher:AddEvent` returns `false`, but
    the caller does not persist or report a dropped-event metric.
-3. Errors before Trace finishes initializing cannot be captured.
-4. Errors handled by game code through `pcall`/`xpcall` are not globally
+2. Errors before Trace finishes initializing cannot be captured.
+3. Errors handled by game code through `pcall`/`xpcall` are not globally
    observable unless reported manually.
-5. A hard crash may not execute `BindToClose`.
-6. Secret authorization is loaded once when the batcher starts; a temporary
+4. A hard crash may not execute `BindToClose`.
+5. Secret authorization is loaded once when the batcher starts; a temporary
    secret failure is not retried.
-7. Warning stack reconstruction tracks one active warning stack and can
-   misassociate highly concurrent warning output.
-8. Messages beginning with `[Trace]` are intentionally filtered to prevent
+6. Output stack reconstruction tracks one active diagnostic stack and can
+   misassociate highly concurrent warning/error output.
+7. Messages beginning with `[Trace]` are intentionally filtered to prevent
    recursive internal telemetry, but legitimate game messages with that prefix
    would also be hidden.
-
-Recommended first fix: capture `MessageError` as a delayed fallback and
-deduplicate it against recent `ScriptContext.Error` events.
 
 `CaptureOutputMessages` is currently `false`, so ordinary `print()` output is
 not stored. This is intentional for cost.

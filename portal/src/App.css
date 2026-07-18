@@ -1848,7 +1848,15 @@ kbd {
 .invitation-status { display: inline-flex !important; align-items: center; gap: 6px; color: var(--success); font-size: 12px; }
 .team-empty { margin: 18px 0 0; color: var(--muted); font-size: 13px; }
 
-.installation-checklist { display: grid; grid-template-columns: minmax(180px, .6fr) minmax(0, 1.4fr); gap: 44px; }
+.installation-checklist {
+  display: grid;
+  grid-template-columns: minmax(180px, .6fr) minmax(0, 1.4fr);
+  gap: 44px;
+  padding: 28px 30px 32px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  background: var(--sidebar);
+}
 .installation-checklist > div > p { margin: 8px 0 0; color: var(--muted); font-size: 12px; }
 .installation-checklist ol { margin: 0; padding: 0; list-style: none; counter-reset: install-step; }
 .installation-checklist li { min-height: 76px; display: grid; grid-template-columns: 28px minmax(150px, .48fr) minmax(240px, 1fr); align-items: start; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line-soft); counter-increment: install-step; }
@@ -2093,6 +2101,7 @@ kbd {
   .managed-game-meta { grid-column: auto; }
   .invite-form { grid-template-columns: 1fr; }
   .invite-form > .primary-button { grid-column: auto; width: 100%; }
+  .installation-checklist { padding: 22px 16px 24px; }
   .installation-checklist li { grid-template-columns: 28px 1fr; padding: 10px 0; }
   .installation-checklist li span { grid-column: 2; }
 }
