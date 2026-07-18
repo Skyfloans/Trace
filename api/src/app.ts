@@ -67,6 +67,7 @@ export async function buildApp(
   pool: Pool,
   webOrigin = "http://localhost:5173",
   oauth: Omit<RobloxOAuthConfig, "webOrigin"> | null = null,
+  readPool: Pool = pool,
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: true,
@@ -98,7 +99,7 @@ export async function buildApp(
   });
 
   app.get("/health", async (_request, reply) => {
-    await pool.query("SELECT 1");
+    await readPool.query("SELECT 1");
     return reply.send({ status: "ok" });
   });
 
@@ -206,7 +207,7 @@ export async function buildApp(
     },
   );
 
-  await registerReadApi(app, pool, oauth ? { ...oauth, webOrigin } : null);
+  await registerReadApi(app, readPool, oauth ? { ...oauth, webOrigin } : null);
 
   return app;
 }

@@ -224,6 +224,33 @@ test("read endpoints reject unauthenticated requests", async () => {
   await app.close();
 });
 
+test("health checks and portal reads use reserved database capacity", async () => {
+  const ingestionPool = {
+    query: async () => {
+      throw new Error("Health check used the ingestion pool");
+    },
+  } as unknown as Pool;
+  let readQueries = 0;
+  const readPool = {
+    query: async () => {
+      readQueries += 1;
+      return { rows: [{ value: 1 }], rowCount: 1 };
+    },
+  } as unknown as Pool;
+  const app = await buildApp(
+    ingestionPool,
+    "http://localhost:5173",
+    null,
+    readPool,
+  );
+
+  const response = await app.inject({ method: "GET", url: "/health" });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(readQueries, 1);
+  await app.close();
+});
+
 test("session timelines include every server event across the full session", async () => {
   let timelineSql = "";
   const pool = {

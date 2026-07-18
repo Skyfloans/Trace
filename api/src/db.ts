@@ -1,9 +1,9 @@
 import { Pool, type PoolClient } from "pg";
 
-export function createPool(connectionString: string): Pool {
+export function createPool(connectionString: string, maxConnections = 20): Pool {
   return new Pool({
     connectionString,
-    max: 20,
+    max: maxConnections,
     idleTimeoutMillis: 5 * 60_000,
     connectionTimeoutMillis: 5_000,
     keepAlive: true,
