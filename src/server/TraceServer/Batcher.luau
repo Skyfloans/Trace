@@ -344,7 +344,13 @@ function Batcher:Flush(force: boolean?): boolean
 		self._retryDelay = math.min(self._retryDelay * 2, 60)
 		self._nextAttemptAt = os.clock() + self._retryDelay
 		local status = if requestSuccess then tostring(response.StatusCode) else "network error"
-		warn(`[Trace] Telemetry upload failed ({status}); retrying later.`)
+		local detail = if requestSuccess then tostring(response.Body or "") else tostring(response)
+		if #detail > 500 then detail = string.sub(detail, 1, 500) .. "..." end
+		if detail ~= "" then
+			warn(`[Trace] Telemetry upload failed ({status}): {detail}; retrying later.`)
+		else
+			warn(`[Trace] Telemetry upload failed ({status}); retrying later.`)
+		end
 	end
 
 	self._flushing = false

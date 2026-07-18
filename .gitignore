@@ -2,6 +2,7 @@
 *.rbxlx
 *.rbxm
 *.rbxmx
+!portal/public/Trace.rbxm
 *.tmp
 *.lock
 *.log

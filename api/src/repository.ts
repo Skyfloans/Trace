@@ -451,11 +451,27 @@ export async function ingestBatch(
   projectId: string,
   batch: IngestBatch,
 ): Promise<IngestResult> {
-  return withTransaction(pool, async (client) => {
+  const ingest = () => withTransaction(pool, async (client) => {
     const jobId = await upsertJob(client, projectId, batch);
     await upsertSessions(client, projectId, jobId, batch);
     const result = await insertEvents(client, projectId, jobId, batch);
     await insertFeedback(client, projectId, batch);
     return result;
   });
+
+  try {
+    return await ingest();
+  } catch (error) {
+    const postgresError = error as { code?: string; message?: string };
+    const missingOccurrencePartition =
+      postgresError.code === "23514" &&
+      postgresError.message?.includes(
+        'no partition of relation "occurrences" found for row',
+      );
+
+    if (!missingOccurrencePartition) throw error;
+
+    await pool.query("SELECT ensure_occurrence_partitions(3)");
+    return ingest();
+  }
 }
