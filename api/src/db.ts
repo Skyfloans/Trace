@@ -3,9 +3,11 @@ import { Pool, type PoolClient } from "pg";
 export function createPool(connectionString: string): Pool {
   return new Pool({
     connectionString,
-    max: 10,
-    idleTimeoutMillis: 30_000,
+    max: 20,
+    idleTimeoutMillis: 5 * 60_000,
     connectionTimeoutMillis: 5_000,
+    keepAlive: true,
+    keepAliveInitialDelayMillis: 10_000,
   });
 }
 

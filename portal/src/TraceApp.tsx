@@ -621,37 +621,14 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
 }
 
 function ProjectSwitcher({ project, projects, open, setOpen, setProjectId }: { project: Project; projects: Project[]; open: boolean; setOpen: (open: boolean) => void; setProjectId: (id: string) => void }) {
-  const [metadata, setMetadata] = useState<Record<string, RobloxGameMetadata>>({})
-  useEffect(() => {
-    const controller = new AbortController()
-    Promise.all(projects.map(async (item) => {
-      try {
-        const result = await getRobloxGameMetadata(item.id, item.robloxUniverseId, controller.signal)
-        return [item.id, result] as const
-      } catch {
-        return null
-      }
-    })).then((results) => {
-      if (!controller.signal.aborted) setMetadata(Object.fromEntries(results.filter((result) => result !== null)))
-    })
-    return () => controller.abort()
-  }, [projects])
-
-  const enrich = (item: Project): Project => ({
-    ...item,
-    name: metadata[item.id]?.name ?? item.name,
-    iconUrl: metadata[item.id]?.iconUrl ?? item.iconUrl,
-  })
-  const displayProject = enrich(project)
   return (
     <div className="game-switch-wrap">
       <button className="game-switch" aria-expanded={open} onClick={() => setOpen(!open)}>
-        <ProjectIcon project={displayProject} />
-        <span><small>Viewing game</small><strong>{displayProject.name}</strong></span><ChevronDown size={17} aria-hidden="true" />
+        <ProjectIcon project={project} />
+        <span><small>Viewing game</small><strong>{project.name}</strong></span><ChevronDown size={17} aria-hidden="true" />
       </button>
       {open && <div className="game-menu" role="group" aria-label="Choose a game"><p>Integrated games</p>{projects.map((item) => {
-        const displayItem = enrich(item)
-        return <button aria-pressed={project.id === item.id} key={item.id} onClick={() => { setProjectId(item.id); setOpen(false) }}><ProjectIcon project={displayItem} /><span><strong>{displayItem.name}</strong><small>{item.robloxUniverseId ? `Universe ${item.robloxUniverseId}` : 'Roblox experience ID not set'}</small></span>{project.id === item.id && <Check size={16} aria-hidden="true" />}</button>
+        return <button aria-pressed={project.id === item.id} key={item.id} onClick={() => { setProjectId(item.id); setOpen(false) }}><ProjectIcon project={item} /><span><strong>{item.name}</strong><small>{item.robloxUniverseId ? `Universe ${item.robloxUniverseId}` : 'Roblox experience ID not set'}</small></span>{project.id === item.id && <Check size={16} aria-hidden="true" />}</button>
       })}</div>}
     </div>
   )

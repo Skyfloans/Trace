@@ -128,7 +128,7 @@ export async function registerSessionAndLogRoutes(
                s.last_seen_at
              FROM sessions s
              WHERE s.project_id = $1
-             ORDER BY s.player_id, s.last_seen_at DESC
+             ORDER BY s.player_id, s.started_at DESC, s.id DESC
            )
            SELECT *
            FROM recent

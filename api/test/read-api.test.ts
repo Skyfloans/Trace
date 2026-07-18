@@ -262,6 +262,44 @@ test("session timelines include every server event across the full session", asy
   await app.close();
 });
 
+test("recent players query follows the existing project-player session index", async () => {
+  let playersSql = "";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("WITH recent AS")) {
+        playersSql = sql;
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/players?limit=50",
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(playersSql, /ORDER BY s\.player_id, s\.started_at DESC, s\.id DESC/);
+  assert.doesNotMatch(playersSql, /ORDER BY s\.player_id, s\.last_seen_at DESC/);
+  await app.close();
+});
+
 test("authenticated non-members cannot read another project", async () => {
   const pool = {
     query: async (sql: string) => {
