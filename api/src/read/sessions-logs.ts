@@ -414,6 +414,7 @@ export async function registerSessionAndLogRoutes(
         );
       }
       const query = request.query as Record<string, unknown>;
+      const includeAllServer = query.includeAllServer === "true";
       const { severities, sides } = readEventFilters(query);
       const parameters = new QueryParameters();
       const project = parameters.add(projectId);
@@ -505,7 +506,7 @@ export async function registerSessionAndLogRoutes(
 
       const result = await pool.query(
         `WITH target_session AS (
-           SELECT id, job_id, started_at, COALESCE(ended_at, last_seen_at) AS ended_at
+           SELECT id, job_id, started_at, COALESCE(ended_at, now()) AS ended_at
            FROM sessions
            WHERE project_id = ${project} AND id = ${session}
          ),
@@ -527,7 +528,7 @@ export async function registerSessionAndLogRoutes(
             AND server_event.job_id = ts.job_id
             AND server_event.session_id IS NULL
             AND server_event.occurred_at BETWEEN ts.started_at AND ts.ended_at
-           JOIN LATERAL (
+           LEFT JOIN LATERAL (
              SELECT
                client_event.id,
                ABS(EXTRACT(EPOCH FROM (
@@ -546,7 +547,7 @@ export async function registerSessionAndLogRoutes(
            ) nearest ON true
          ),
          filtered AS (
-           SELECT timeline_ids.*
+           SELECT timeline_ids.*, eg.source
            FROM timeline_ids
            JOIN occurrences o
              ON o.id = timeline_ids.id
@@ -554,15 +555,19 @@ export async function registerSessionAndLogRoutes(
            JOIN error_groups eg ON eg.id = o.group_id
            ${timelineConditions.length ? `WHERE ${timelineConditions.join(" AND ")}` : ""}
          ),
-         ${selection}
+         ${selection},
+         displayed AS (
+           SELECT * FROM selected
+           ${includeAllServer ? "UNION SELECT * FROM filtered WHERE source = 'server'" : ""}
+         )
          SELECT
            ${occurrenceSelect},
-           selected.related_occurrence_id,
-           selected.delta_ms
-         FROM selected
+           displayed.related_occurrence_id,
+           displayed.delta_ms
+         FROM displayed
          JOIN occurrences o
-           ON o.id = selected.id
-          AND o.occurred_at = selected.occurred_at
+           ON o.id = displayed.id
+          AND o.occurred_at = displayed.occurred_at
          JOIN error_groups eg ON eg.id = o.group_id
          LEFT JOIN sessions s ON s.id = o.session_id
          ORDER BY o.occurred_at, o.id`,
@@ -570,8 +575,12 @@ export async function registerSessionAndLogRoutes(
       );
 
       const hasMore =
-        typeof query.around !== "string" && result.rows.length > resultLimit;
-      const rows = result.rows.slice(0, resultLimit);
+        !includeAllServer &&
+        typeof query.around !== "string" &&
+        result.rows.length > resultLimit;
+      const rows = includeAllServer
+        ? result.rows
+        : result.rows.slice(0, resultLimit);
       const data = rows.map((row) => {
         const occurrence = mapOccurrence(row);
         if (row.related_occurrence_id) {

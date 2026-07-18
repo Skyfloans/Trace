@@ -1342,7 +1342,7 @@ function SessionLogs({ project, sessionId, selectedEventId, setSelectedEventId, 
   const [shareFallback, setShareFallback] = useState('')
   const session = useResource((signal) => apiGet<Session>(projectPath(project.id, `/sessions/${sessionId}`), signal), `${project.id}:${sessionId}:detail`)
   const timeline = useResource(
-    (signal) => apiGet<CursorPage<LogOccurrence>>(projectPath(project.id, `/sessions/${sessionId}/timeline${selectedEventId ? queryString({ around: selectedEventId, before: 100, after: 100 }) : '?limit=500'}`), signal),
+    (signal) => apiGet<CursorPage<LogOccurrence>>(projectPath(project.id, `/sessions/${sessionId}/timeline${queryString({ includeAllServer: 'true', around: selectedEventId ?? undefined, before: selectedEventId ? 100 : undefined, after: selectedEventId ? 100 : undefined, limit: selectedEventId ? undefined : 500 })}`), signal),
     `${project.id}:${sessionId}:timeline`,
   )
   const events = useMemo(() => timeline.data?.data ?? [], [timeline.data])

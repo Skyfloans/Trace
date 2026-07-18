@@ -220,6 +220,48 @@ test("read endpoints reject unauthenticated requests", async () => {
   await app.close();
 });
 
+test("session timelines include every server event across the full session", async () => {
+  let timelineSql = "";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT 1 FROM sessions")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("WITH target_session AS")) {
+        timelineSql = sql;
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/sessions/30000000-0000-4000-8000-000000000001/timeline?includeAllServer=true",
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(timelineSql, /COALESCE\(ended_at, now\(\)\)/);
+  assert.match(timelineSql, /LEFT JOIN LATERAL/);
+  assert.match(timelineSql, /UNION SELECT \* FROM filtered WHERE source = 'server'/);
+  await app.close();
+});
+
 test("authenticated non-members cannot read another project", async () => {
   const pool = {
     query: async (sql: string) => {
