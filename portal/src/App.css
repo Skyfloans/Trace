@@ -1751,8 +1751,8 @@ kbd {
 .game-identity strong { font-size: 14px; }
 .game-identity small { margin-top: 3px; color: var(--muted); font-size: 11px; }
 
-.managed-game-list { border-top: 1px solid var(--line-soft); }
-.managed-game-list article { min-height: 76px; display: grid; grid-template-columns: minmax(190px, 1fr) minmax(250px, 1.1fr) auto; align-items: center; gap: 20px; padding: 12px 8px; border-bottom: 1px solid var(--line-soft); }
+.managed-game-list { display: grid; grid-template-columns: minmax(190px, 1fr) minmax(250px, 1.1fr) auto; column-gap: 20px; border-top: 1px solid var(--line-soft); }
+.managed-game-list article { min-height: 76px; grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: center; padding: 12px 8px; border-bottom: 1px solid var(--line-soft); }
 .managed-game-meta { min-width: 0; display: flex; align-items: center; gap: 12px; color: var(--muted); font-size: 12px; }
 .verification-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
 .verification-status.verified { color: var(--success); }
@@ -1793,7 +1793,7 @@ kbd {
 .invite-form > label { display: grid; gap: 6px; }
 .invite-form > label small { color: var(--muted); font-size: 11px; font-weight: 400; }
 .invite-form .select-control { min-width: 0; }
-.invite-form > .primary-button { margin-top: 25px; }
+.invite-form > .primary-button { margin-top: 20px; }
 .invite-user-preview { grid-column: 1 / -1; min-height: 64px; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--line-soft); border-radius: var(--radius-md); background: #111a23; }
 .invite-user-preview > img,
 .invite-avatar-fallback,
@@ -1898,7 +1898,7 @@ kbd {
   .all-log-grid > :nth-child(5) { display: none; }
   .session-toolbar { align-items: flex-start; }
   .session-actions { flex-wrap: wrap; justify-content: flex-end; }
-  .managed-game-list article { grid-template-columns: minmax(170px, 1fr) minmax(220px, 1fr) auto; gap: 12px; }
+  .managed-game-list { grid-template-columns: minmax(170px, 1fr) minmax(220px, 1fr) auto; column-gap: 12px; }
   .managed-game-meta { flex-wrap: wrap; gap: 6px 10px; }
 }
 
@@ -1977,7 +1977,8 @@ kbd {
   .feedback-session-button { min-height: 40px; }
   .setup-workspace,
   .installation-checklist { grid-template-columns: 1fr; gap: 22px; }
-  .managed-game-list article { grid-template-columns: minmax(0, 1fr) auto; }
+  .managed-game-list { display: block; }
+  .managed-game-list article { grid-template-columns: minmax(0, 1fr) auto; gap: 12px; }
   .managed-game-meta { grid-column: 1 / -1; order: 3; }
   .credential-values { grid-template-columns: 1fr; }
   .invite-form { grid-template-columns: minmax(0, 1fr) 150px; }
