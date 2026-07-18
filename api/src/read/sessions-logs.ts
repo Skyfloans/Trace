@@ -91,6 +91,16 @@ function utcDatesBetween(startedAt: unknown, endedAt: unknown): string[] {
   return dates;
 }
 
+function archivedDatesBetween(startedAt: unknown, endedAt: unknown): string[] {
+  const archiveCutoff = new Date(Date.now() - 24 * 60 * 60 * 1_000);
+  archiveCutoff.setUTCHours(0, 0, 0, 0);
+  archiveCutoff.setUTCDate(archiveCutoff.getUTCDate() - 1);
+  const latestArchivedDate = archiveCutoff.toISOString().slice(0, 10);
+  return utcDatesBetween(startedAt, endedAt).filter(
+    (date) => date <= latestArchivedDate,
+  );
+}
+
 async function readArchivedSessionTimeline(options: {
   archiveStorage: ArchiveStorage;
   endedAt: unknown;
@@ -105,34 +115,47 @@ async function readArchivedSessionTimeline(options: {
   const endedAtMs = new Date(String(options.endedAt)).getTime();
   const results: ArchivedOccurrence[] = [];
 
-  for (const date of utcDatesBetween(options.startedAt, options.endedAt)) {
-    const manifest = await readArchiveManifest(options.archiveStorage, date);
-    if (!manifest) continue;
-    const chunks = manifest.chunks.filter(
+  const dates = archivedDatesBetween(options.startedAt, options.endedAt);
+  if (dates.length === 0) return results;
+
+  const manifests = await Promise.all(
+    dates.map((date) => readArchiveManifest(options.archiveStorage, date)),
+  );
+  const chunks = manifests.flatMap((manifest) =>
+    manifest?.chunks.filter(
       (chunk) =>
-        chunk.projectId === options.projectId && chunk.jobId === options.jobId,
-    );
-    for (const chunk of chunks) {
+        chunk.projectId === options.projectId &&
+        chunk.jobId === options.jobId &&
+        Date.parse(chunk.firstOccurredAt) <= endedAtMs &&
+        Date.parse(chunk.lastOccurredAt) >= startedAtMs,
+    ) ?? [],
+  );
+  const bodies = await Promise.all(
+    chunks.map(async (chunk) => {
       const body = await options.archiveStorage.get(chunk.key);
       if (!body) throw new Error(`missing telemetry archive chunk ${chunk.key}`);
       const sha256 = createHash("sha256").update(body).digest("hex");
       if (sha256 !== chunk.sha256) {
         throw new Error(`telemetry archive checksum mismatch for ${chunk.key}`);
       }
-      for (const occurrence of decodeArchiveChunk(body)) {
-        const occurredAtMs = Date.parse(occurrence.occurredAt);
-        const belongsToTimeline =
-          occurrence.sessionId === options.sessionId ||
-          (occurrence.side === "server" &&
-            occurredAtMs >= startedAtMs &&
-            occurredAtMs <= endedAtMs);
-        if (!belongsToTimeline) continue;
-        if (options.severities && !options.severities.includes(occurrence.severity)) {
-          continue;
-        }
-        if (options.sides && !options.sides.includes(occurrence.side)) continue;
-        results.push(occurrence);
+      return body;
+    }),
+  );
+
+  for (const body of bodies) {
+    for (const occurrence of decodeArchiveChunk(body)) {
+      const occurredAtMs = Date.parse(occurrence.occurredAt);
+      const belongsToTimeline =
+        occurrence.sessionId === options.sessionId ||
+        (occurrence.side === "server" &&
+          occurredAtMs >= startedAtMs &&
+          occurredAtMs <= endedAtMs);
+      if (!belongsToTimeline) continue;
+      if (options.severities && !options.severities.includes(occurrence.severity)) {
+        continue;
       }
+      if (options.sides && !options.sides.includes(occurrence.side)) continue;
+      results.push(occurrence);
     }
   }
   return results;

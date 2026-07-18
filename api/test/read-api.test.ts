@@ -310,13 +310,18 @@ test("session timelines merge verified archived server events", async () => {
   const projectId = "20000000-0000-4000-8000-000000000001";
   const sessionId = "30000000-0000-4000-8000-000000000001";
   const jobId = "40000000-0000-4000-8000-000000000001";
+  const sessionStart = new Date(Date.now() - 3 * 24 * 60 * 60 * 1_000);
+  sessionStart.setUTCHours(12, 0, 0, 0);
+  const sessionEnd = new Date(sessionStart.getTime() + 60 * 60 * 1_000);
+  const occurrenceTime = new Date(sessionStart.getTime() + 30 * 60 * 1_000);
+  const partitionDate = sessionStart.toISOString().slice(0, 10);
   const occurrence = {
     id: "50000000-0000-4000-8000-000000000001",
     projectId,
-    occurredAt: "2026-07-17T12:30:00.000Z",
-    lastOccurredAt: "2026-07-17T12:30:00.000Z",
+    occurredAt: occurrenceTime.toISOString(),
+    lastOccurredAt: occurrenceTime.toISOString(),
     repeatCount: 1,
-    receivedAt: "2026-07-17T12:30:01.000Z",
+    receivedAt: new Date(occurrenceTime.getTime() + 1_000).toISOString(),
     severity: "error",
     side: "server",
     message: "archived server error",
@@ -335,9 +340,9 @@ test("session timelines merge verified archived server events", async () => {
   const manifest = Buffer.from(
     JSON.stringify({
       version: 1,
-      partition: "occurrences_2026_07_17",
-      partitionDate: "2026-07-17",
-      archivedAt: "2026-07-18T12:00:00.000Z",
+      partition: `occurrences_${partitionDate.replaceAll("-", "_")}`,
+      partitionDate,
+      archivedAt: new Date().toISOString(),
       occurrenceCount: 1,
       chunks: [
         {
@@ -350,13 +355,31 @@ test("session timelines merge verified archived server events", async () => {
           projectId,
           sha256: chunkSha256,
         },
+        {
+          bytes: chunk.byteLength,
+          count: 1,
+          firstOccurredAt: new Date(sessionStart.getTime() - 2 * 60 * 60 * 1_000).toISOString(),
+          lastOccurredAt: new Date(sessionStart.getTime() - 60 * 60 * 1_000).toISOString(),
+          jobId,
+          key: "archive/non-overlapping.json.gz",
+          projectId,
+          sha256: chunkSha256,
+        },
       ],
     }),
   );
   const archiveStorage = {
     key: (relativeKey: string) => `archive/${relativeKey}`,
-    get: async (key: string) =>
-      key.endsWith("manifest.json") ? manifest : key.endsWith("chunk.json.gz") ? chunk : null,
+    get: async (key: string) => {
+      if (key.endsWith("non-overlapping.json.gz")) {
+        throw new Error("non-overlapping archive chunk should not be downloaded");
+      }
+      return key.endsWith("manifest.json")
+        ? manifest
+        : key.endsWith("chunk.json.gz")
+          ? chunk
+          : null;
+    },
   } as unknown as ArchiveStorage;
   const pool = {
     query: async (sql: string) => {
@@ -374,8 +397,8 @@ test("session timelines merge verified archived server events", async () => {
           rows: [
             {
               job_id: jobId,
-              started_at: "2026-07-17T12:00:00.000Z",
-              ended_at: "2026-07-17T13:00:00.000Z",
+              started_at: sessionStart.toISOString(),
+              ended_at: sessionEnd.toISOString(),
             },
           ],
           rowCount: 1,
@@ -405,6 +428,62 @@ test("session timelines merge verified archived server events", async () => {
   assert.deepEqual(response.json().data.map((item: { id: string }) => item.id), [
     occurrence.id,
   ]);
+  await app.close();
+});
+
+test("recent session timelines skip archive storage", async () => {
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const sessionId = "30000000-0000-4000-8000-000000000001";
+  const jobId = "40000000-0000-4000-8000-000000000001";
+  const startedAt = new Date(Date.now() - 60 * 60 * 1_000).toISOString();
+  const endedAt = new Date().toISOString();
+  let archiveReads = 0;
+  const archiveStorage = {
+    key: (relativeKey: string) => `archive/${relativeKey}`,
+    get: async () => {
+      archiveReads += 1;
+      return null;
+    },
+  } as unknown as ArchiveStorage;
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{ id: "10000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT job_id, started_at")) {
+        return {
+          rows: [{ job_id: jobId, started_at: startedAt, ended_at: endedAt }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("WITH target_session AS")) {
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "http://localhost:5173",
+    null,
+    pool,
+    archiveStorage,
+  );
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/projects/${projectId}/sessions/${sessionId}/timeline?includeAllServer=true`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(archiveReads, 0);
   await app.close();
 });
 
