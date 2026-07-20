@@ -574,7 +574,7 @@ test("recent players scan newest sessions and stop after filling the page", asyn
   await app.close();
 });
 
-test("grouped logs drive indexed occurrence scans from candidate groups", async () => {
+test("grouped logs bound candidate groups before calculating exact statistics", async () => {
   let groupsSql = "";
   const pool = {
     query: async (sql: string) => {
@@ -602,15 +602,17 @@ test("grouped logs drive indexed occurrence scans from candidate groups", async 
 
   const response = await app.inject({
     method: "GET",
-    url: "/v1/projects/20000000-0000-4000-8000-000000000001/errors?severity=error,warning&limit=25",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/errors?severity=error,warning&sort=recent&limit=25",
     headers: { authorization: `Bearer ${"x".repeat(40)}` },
   });
 
   assert.equal(response.statusCode, 200);
   assert.match(groupsSql, /FROM error_groups eg/);
   assert.match(groupsSql, /eg\.last_seen_at >= \$\d+/);
+  assert.match(groupsSql, /ORDER BY eg\.last_seen_at DESC, eg\.id DESC\s+LIMIT \$\d+/);
   assert.match(groupsSql, /o\.group_id = candidate_groups\.group_id/);
   assert.match(groupsSql, /JOIN LATERAL/);
+  assert.doesNotMatch(groupsSql, /ORDER BY event_count DESC/);
   await app.close();
 });
 

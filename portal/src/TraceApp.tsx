@@ -1280,6 +1280,7 @@ function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId,
     ...range,
     severity: severity === 'all' ? 'error,warning' : severity,
     side: side === 'all' ? undefined : side,
+    sort: 'recent',
     limit: 25,
   })
   const path = projectPath(project.id, `/errors${filters}`)

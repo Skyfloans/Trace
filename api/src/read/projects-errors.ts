@@ -128,6 +128,9 @@ export async function registerProjectAndErrorRoutes(
         50,
         100,
       );
+      const sort = z
+        .enum(["count", "recent"])
+        .parse(typeof query.sort === "string" ? query.sort : "count");
       const parameters = new QueryParameters();
       const project = parameters.add(projectId);
       const from = parameters.add(time.from);
@@ -145,7 +148,8 @@ export async function registerProjectAndErrorRoutes(
         );
       }
 
-      let cursorCondition = "";
+      let groupCursorCondition = "";
+      let statsCursorCondition = "";
       if (typeof query.cursor === "string") {
         const values = decodeCursor(query.cursor);
         if (
@@ -156,13 +160,81 @@ export async function registerProjectAndErrorRoutes(
         ) {
           throw new ReadApiError(400, "invalid_cursor", "Invalid cursor.");
         }
-        cursorCondition = `WHERE (stats.event_count, stats.last_seen_at, stats.group_id)
-          < (${parameters.add(values[0])}, ${parameters.add(values[1])}, ${parameters.add(values[2])})`;
+        if (sort === "recent") {
+          groupCursorCondition = `AND (eg.last_seen_at, eg.id)
+            < (${parameters.add(values[1])}, ${parameters.add(values[2])})`;
+        } else {
+          statsCursorCondition = `WHERE (stats.event_count, stats.last_seen_at, stats.group_id)
+            < (${parameters.add(values[0])}, ${parameters.add(values[1])}, ${parameters.add(values[2])})`;
+        }
       }
       const rowLimit = parameters.add(limit + 1);
 
       const result = await pool.query(
-        `WITH candidate_groups AS (
+        sort === "recent"
+          ? `WITH candidate_groups AS (
+           SELECT
+             eg.id AS group_id,
+             eg.last_seen_at AS cursor_last_seen_at
+           FROM error_groups eg
+           WHERE ${groupConditions.join(" AND ")}
+             ${groupCursorCondition}
+           ORDER BY eg.last_seen_at DESC, eg.id DESC
+           LIMIT ${rowLimit}
+         ),
+         stats AS (
+           SELECT
+             candidate_groups.group_id,
+             candidate_groups.cursor_last_seen_at,
+             group_stats.event_count,
+             group_stats.affected_player_count,
+             group_stats.affected_server_count,
+             group_stats.first_seen_at,
+             group_stats.last_seen_at
+           FROM candidate_groups
+           JOIN LATERAL (
+             SELECT
+               SUM(o.repeat_count)::int AS event_count,
+               COUNT(DISTINCT s.player_id)::int AS affected_player_count,
+               COUNT(DISTINCT o.job_id)::int AS affected_server_count,
+               MIN(o.occurred_at) AS first_seen_at,
+               MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
+             FROM occurrences o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.project_id = ${project}
+               AND o.group_id = candidate_groups.group_id
+               AND o.occurred_at >= ${from}
+               AND o.occurred_at < ${to}
+           ) group_stats ON group_stats.event_count IS NOT NULL
+         )
+         SELECT
+           stats.group_id,
+           stats.cursor_last_seen_at,
+           stats.event_count,
+           stats.affected_player_count,
+           stats.affected_server_count,
+           stats.first_seen_at,
+           stats.last_seen_at,
+           latest.id AS latest_occurrence_id,
+           eg.fingerprint,
+           eg.level,
+           eg.source,
+           eg.normalized_message,
+           eg.source_script
+         FROM stats
+         JOIN error_groups eg ON eg.id = stats.group_id
+         JOIN LATERAL (
+           SELECT o.id
+           FROM occurrences o
+           WHERE o.project_id = ${project}
+             AND o.group_id = stats.group_id
+             AND o.occurred_at >= ${from}
+             AND o.occurred_at < ${to}
+           ORDER BY o.occurred_at DESC, o.id DESC
+           LIMIT 1
+         ) latest ON true
+         ORDER BY stats.cursor_last_seen_at DESC, stats.group_id DESC`
+          : `WITH candidate_groups AS (
            SELECT eg.id AS group_id
            FROM error_groups eg
            WHERE ${groupConditions.join(" AND ")}
@@ -194,12 +266,13 @@ export async function registerProjectAndErrorRoutes(
          paged AS (
            SELECT *
            FROM stats
-           ${cursorCondition}
+           ${statsCursorCondition}
            ORDER BY event_count DESC, last_seen_at DESC, group_id DESC
            LIMIT ${rowLimit}
          )
          SELECT
            paged.group_id,
+           paged.last_seen_at AS cursor_last_seen_at,
            paged.event_count,
            paged.affected_player_count,
            paged.affected_server_count,
@@ -249,7 +322,7 @@ export async function registerProjectAndErrorRoutes(
           hasMore && last
             ? encodeCursor([
                 last.event_count,
-                iso(last.last_seen_at),
+                iso(last.cursor_last_seen_at),
                 last.group_id,
               ])
             : null,

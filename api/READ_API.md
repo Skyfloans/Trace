@@ -25,6 +25,10 @@ the signed-in Roblox user's identity and project memberships are used.
 - All timestamps are UTC ISO 8601 strings.
 - All Roblox identifiers are JSON strings.
 - List endpoints use opaque keyset cursors, never offsets.
+- Grouped error pages accept `sort=count` (the default) or `sort=recent`.
+  Recent pages bound each page before calculating exact occurrence, player,
+  and server totals, so a noisy project does not aggregate every retained
+  group before returning.
 - High-volume queries default to the last 24 hours. Detailed occurrence data is
   retained for at least 24 hours; compact hourly activity totals remain
   available for three days.
