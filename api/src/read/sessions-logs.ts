@@ -66,6 +66,44 @@ function playerResponse(row: Record<string, unknown>) {
   };
 }
 
+async function readRecentPlayers(
+  pool: Pool,
+  projectId: string,
+  limit: number,
+): Promise<Record<string, unknown>[]> {
+  const players = new Map<string, Record<string, unknown>>();
+  const batchSize = Math.max(250, limit * 5);
+  let cursorTime: unknown = null;
+  let cursorId: unknown = null;
+
+  while (players.size < limit) {
+    const result = await pool.query(
+      `SELECT
+         s.id, s.player_id, s.player_name, s.player_display_name,
+         s.avatar_url, s.started_at, s.last_seen_at
+       FROM sessions s
+       WHERE s.project_id = $1
+         AND ($2::timestamptz IS NULL OR (s.started_at, s.id) < ($2, $3::uuid))
+       ORDER BY s.started_at DESC, s.id DESC
+       LIMIT $4`,
+      [projectId, cursorTime, cursorId, batchSize],
+    );
+
+    for (const row of result.rows) {
+      const playerId = String(row.player_id);
+      if (!players.has(playerId)) players.set(playerId, row);
+      if (players.size >= limit) break;
+    }
+
+    const last = result.rows.at(-1);
+    if (!last || result.rows.length < batchSize) break;
+    cursorTime = last.started_at;
+    cursorId = last.id;
+  }
+
+  return [...players.values()];
+}
+
 function readEventFilters(query: Record<string, unknown>) {
   return {
     severities: parseCsvEnum(
@@ -184,8 +222,8 @@ export async function registerSessionAndLogRoutes(
       const limit = clampLimit(query.limit as string | undefined, 20, 50);
       const numeric = search.length > 0 && /^\d+$/.test(search);
 
-      const result = search
-        ? await pool.query(
+      const rows = search
+        ? (await pool.query(
           `WITH ranked AS (
            SELECT DISTINCT ON (s.player_id)
              s.player_id, s.player_name, s.player_display_name, s.avatar_url,
@@ -210,26 +248,12 @@ export async function registerSessionAndLogRoutes(
          ORDER BY rank, lower(player_name), player_id
          LIMIT $4`,
           [projectId, numeric, search, limit],
-        )
-        : await pool.query(
-          `WITH recent AS (
-             SELECT DISTINCT ON (s.player_id)
-               s.player_id, s.player_name, s.player_display_name, s.avatar_url,
-               s.last_seen_at
-             FROM sessions s
-             WHERE s.project_id = $1
-             ORDER BY s.player_id, s.started_at DESC, s.id DESC
-           )
-           SELECT *
-           FROM recent
-           ORDER BY last_seen_at DESC NULLS LAST, player_id
-           LIMIT $2`,
-          [projectId, limit],
-        );
+        )).rows
+        : await readRecentPlayers(pool, projectId, limit);
 
       cache(reply, 10);
       return {
-        data: result.rows.map(playerResponse),
+        data: rows.map(playerResponse),
       };
     },
   );

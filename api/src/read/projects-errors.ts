@@ -133,14 +133,14 @@ export async function registerProjectAndErrorRoutes(
       const from = parameters.add(time.from);
       const to = parameters.add(time.to);
       const severity = parameters.addArray(severities);
-      const conditions = [
-        `o.project_id = ${project}`,
-        `o.occurred_at >= ${from}`,
-        `o.occurred_at < ${to}`,
+      const groupConditions = [
+        `eg.project_id = ${project}`,
+        `eg.last_seen_at >= ${from}`,
+        `eg.first_seen_at < ${to}`,
         `eg.level = ANY(${severity}::log_level[])`,
       ];
       if (sides) {
-        conditions.push(
+        groupConditions.push(
           `eg.source = ANY(${parameters.addArray(sides)}::log_source[])`,
         );
       }
@@ -162,19 +162,34 @@ export async function registerProjectAndErrorRoutes(
       const rowLimit = parameters.add(limit + 1);
 
       const result = await pool.query(
-        `WITH stats AS (
+        `WITH candidate_groups AS (
+           SELECT eg.id AS group_id
+           FROM error_groups eg
+           WHERE ${groupConditions.join(" AND ")}
+         ),
+         stats AS (
            SELECT
-             o.group_id,
-             SUM(o.repeat_count)::int AS event_count,
-             COUNT(DISTINCT s.player_id)::int AS affected_player_count,
-             COUNT(DISTINCT o.job_id)::int AS affected_server_count,
-             MIN(o.occurred_at) AS first_seen_at,
-             MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
-           FROM occurrences o
-           JOIN error_groups eg ON eg.id = o.group_id
-           LEFT JOIN sessions s ON s.id = o.session_id
-           WHERE ${conditions.join(" AND ")}
-           GROUP BY o.group_id
+             candidate_groups.group_id,
+             group_stats.event_count,
+             group_stats.affected_player_count,
+             group_stats.affected_server_count,
+             group_stats.first_seen_at,
+             group_stats.last_seen_at
+           FROM candidate_groups
+           JOIN LATERAL (
+             SELECT
+               SUM(o.repeat_count)::int AS event_count,
+               COUNT(DISTINCT s.player_id)::int AS affected_player_count,
+               COUNT(DISTINCT o.job_id)::int AS affected_server_count,
+               MIN(o.occurred_at) AS first_seen_at,
+               MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
+             FROM occurrences o
+             LEFT JOIN sessions s ON s.id = o.session_id
+             WHERE o.project_id = ${project}
+               AND o.group_id = candidate_groups.group_id
+               AND o.occurred_at >= ${from}
+               AND o.occurred_at < ${to}
+           ) group_stats ON group_stats.event_count IS NOT NULL
          ),
          paged AS (
            SELECT *

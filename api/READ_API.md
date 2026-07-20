@@ -74,8 +74,10 @@ GET /v1/projects/{projectId}/server-jobs/{serverJobId}/sessions
 Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
 the first event represented by that sampled row. Group, activity, session, and
 job counts sum `repeatCount`, so compact storage does not change displayed
-event totals. Occurrence lists return sampled aggregate rows rather than
-expanding repeated events back into duplicate JSON objects.
+event totals. Session counts combine events attached directly to the player
+session with server events from the same job that occurred during that
+session's time window. Occurrence lists return sampled aggregate rows rather
+than expanding repeated events back into duplicate JSON objects.
 
 Activity buckets older than raw retention are reconstructed from hourly
 rollups. Minute buckets in that older period place the hour's total at the

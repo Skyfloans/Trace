@@ -13,6 +13,7 @@ import {
   parseTimeRange,
   ReadApiError,
 } from "../src/read/http.js";
+import { sessionCountJoin } from "../src/read/mappers.js";
 import { getGameMetadata } from "../src/read/roblox.js";
 
 test("Roblox games with bracketed update tags remain linkable", async (t) => {
@@ -306,6 +307,17 @@ test("session timelines include every server event across the full session", asy
   await app.close();
 });
 
+test("session counts combine direct client events with server events in the session window", () => {
+  assert.match(sessionCountJoin, /o\.session_id = s\.id/);
+  assert.match(sessionCountJoin, /server_group\.source = 'server'/);
+  assert.match(sessionCountJoin, /o\.job_id = s\.job_id/);
+  assert.match(sessionCountJoin, /o\.session_id IS DISTINCT FROM s\.id/);
+  assert.match(
+    sessionCountJoin,
+    /o\.occurred_at BETWEEN s\.started_at AND COALESCE\(s\.ended_at, now\(\)\)/,
+  );
+});
+
 test("session timelines merge verified archived server events", async () => {
   const projectId = "20000000-0000-4000-8000-000000000001";
   const sessionId = "30000000-0000-4000-8000-000000000001";
@@ -487,7 +499,7 @@ test("recent session timelines skip archive storage", async () => {
   await app.close();
 });
 
-test("recent players query follows the existing project-player session index", async () => {
+test("recent players scan newest sessions and stop after filling the page", async () => {
   let playersSql = "";
   const pool = {
     query: async (sql: string) => {
@@ -504,9 +516,40 @@ test("recent players query follows the existing project-player session index", a
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
-      if (sql.includes("WITH recent AS")) {
+      if (sql.includes("ORDER BY s.started_at DESC, s.id DESC")) {
         playersSql = sql;
-        return { rows: [], rowCount: 0 };
+        return {
+          rows: [
+            {
+              id: "30000000-0000-4000-8000-000000000001",
+              player_id: "123",
+              player_name: "LatestPlayer",
+              player_display_name: "Latest Player",
+              avatar_url: null,
+              started_at: "2026-07-20T12:00:00.000Z",
+              last_seen_at: "2026-07-20T12:10:00.000Z",
+            },
+            {
+              id: "30000000-0000-4000-8000-000000000002",
+              player_id: "123",
+              player_name: "OlderPlayerName",
+              player_display_name: "Older Player Name",
+              avatar_url: null,
+              started_at: "2026-07-20T11:00:00.000Z",
+              last_seen_at: "2026-07-20T11:10:00.000Z",
+            },
+            {
+              id: "30000000-0000-4000-8000-000000000003",
+              player_id: "456",
+              player_name: "SecondPlayer",
+              player_display_name: "Second Player",
+              avatar_url: null,
+              started_at: "2026-07-20T10:00:00.000Z",
+              last_seen_at: "2026-07-20T10:10:00.000Z",
+            },
+          ],
+          rowCount: 3,
+        };
       }
       throw new Error(`Unexpected query: ${sql}`);
     },
@@ -520,8 +563,54 @@ test("recent players query follows the existing project-player session index", a
   });
 
   assert.equal(response.statusCode, 200);
-  assert.match(playersSql, /ORDER BY s\.player_id, s\.started_at DESC, s\.id DESC/);
-  assert.doesNotMatch(playersSql, /ORDER BY s\.player_id, s\.last_seen_at DESC/);
+  assert.match(playersSql, /WHERE s\.project_id = \$1/);
+  assert.match(playersSql, /\(s\.started_at, s\.id\) < \(\$2, \$3::uuid\)/);
+  assert.match(playersSql, /ORDER BY s\.started_at DESC, s\.id DESC/);
+  assert.doesNotMatch(playersSql, /DISTINCT ON/);
+  assert.deepEqual(
+    response.json().data.map((player: { username: string }) => player.username),
+    ["LatestPlayer", "SecondPlayer"],
+  );
+  await app.close();
+});
+
+test("grouped logs drive indexed occurrence scans from candidate groups", async () => {
+  let groupsSql = "";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("WITH candidate_groups AS")) {
+        groupsSql = sql;
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/errors?severity=error,warning&limit=25",
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(groupsSql, /FROM error_groups eg/);
+  assert.match(groupsSql, /eg\.last_seen_at >= \$\d+/);
+  assert.match(groupsSql, /o\.group_id = candidate_groups\.group_id/);
+  assert.match(groupsSql, /JOIN LATERAL/);
   await app.close();
 });
 

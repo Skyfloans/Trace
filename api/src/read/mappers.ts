@@ -117,11 +117,24 @@ export const sessionSelect = `
 export const sessionCountJoin = `
   LEFT JOIN LATERAL (
     SELECT
-      COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.level = 'error'), 0)::int AS error_count,
-      COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.level = 'warning'), 0)::int AS warning_count
-    FROM occurrences o
-    JOIN error_groups eg ON eg.id = o.group_id
-    WHERE o.project_id = s.project_id
-      AND o.session_id = s.id
+      COALESCE(SUM(session_events.repeat_count) FILTER (WHERE eg.level = 'error'), 0)::int AS error_count,
+      COALESCE(SUM(session_events.repeat_count) FILTER (WHERE eg.level = 'warning'), 0)::int AS warning_count
+    FROM (
+      SELECT o.group_id, o.repeat_count
+      FROM occurrences o
+      WHERE o.project_id = s.project_id
+        AND o.session_id = s.id
+      UNION ALL
+      SELECT o.group_id, o.repeat_count
+      FROM occurrences o
+      JOIN error_groups server_group
+        ON server_group.id = o.group_id
+       AND server_group.source = 'server'
+      WHERE o.project_id = s.project_id
+        AND o.job_id = s.job_id
+        AND o.session_id IS DISTINCT FROM s.id
+        AND o.occurred_at BETWEEN s.started_at AND COALESCE(s.ended_at, now())
+    ) session_events
+    JOIN error_groups eg ON eg.id = session_events.group_id
   ) ec ON true
 `;
