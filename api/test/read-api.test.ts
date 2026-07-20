@@ -6,7 +6,8 @@ import type { Pool } from "pg";
 import type { FastifyRequest } from "fastify";
 import type { ArchiveStorage } from "../src/archive-storage.js";
 import { buildApp, ingestionRateLimitKey } from "../src/app.js";
-import { findProjectForApiKey, verifyProjectUniverse } from "../src/repository.js";
+import { findProjectForApiKey, ingestBatch, verifyProjectUniverse } from "../src/repository.js";
+import { ingestBatchSchema } from "../src/schema.js";
 import {
   decodeCursor,
   encodeCursor,
@@ -15,6 +16,84 @@ import {
 } from "../src/read/http.js";
 import { sessionCountJoin } from "../src/read/mappers.js";
 import { getGameMetadata } from "../src/read/roblox.js";
+
+test("ingestion updates raw occurrences and live hourly totals atomically", async () => {
+  let occurrenceSql = "";
+  let released = false;
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("hashtextextended('trace-job:")) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("WITH project_update AS")) {
+        return {
+          rows: [{ id: "30000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("SELECT pg_advisory_xact_lock(") && sql.includes("ordered.fingerprint")) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO error_groups")) {
+        const groups = JSON.parse(String(values?.[1])) as Array<{ fingerprint: string }>;
+        return {
+          rows: [{
+            id: "40000000-0000-4000-8000-000000000001",
+            fingerprint: groups[0].fingerprint,
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("INSERT INTO occurrences")) {
+        occurrenceSql = sql;
+        return { rows: [{ accepted: 1 }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected transaction query: ${sql}`);
+    },
+    release: () => {
+      released = true;
+    },
+  };
+  const pool = { connect: async () => client } as unknown as Pool;
+  const batch = ingestBatchSchema.parse({
+    version: 1,
+    batchId: "50000000-0000-4000-8000-000000000001",
+    job: {
+      id: "30000000-0000-4000-8000-000000000001",
+      robloxJobId: "roblox-job",
+      placeId: "1",
+      universeId: "2",
+      startedAt: "2026-07-20T10:00:00.000Z",
+      lastSeenAt: "2026-07-20T10:01:00.000Z",
+    },
+    sessions: [],
+    events: [{
+      id: "60000000-0000-4000-8000-000000000001",
+      occurredAt: "2026-07-20T10:00:30.000Z",
+      repeatCount: 1,
+      source: "server",
+      level: "warning",
+      message: "DataStore request entered the queue",
+    }],
+    feedback: [],
+  });
+
+  assert.deepEqual(
+    await ingestBatch(pool, "20000000-0000-4000-8000-000000000001", batch),
+    { accepted: 1, duplicates: 0 },
+  );
+  assert.match(occurrenceSql, /inserted AS \(\s+INSERT INTO occurrences/);
+  assert.match(occurrenceSql, /live_rollups AS \(\s+INSERT INTO occurrence_rollups_hourly/);
+  assert.match(
+    occurrenceSql,
+    /event_count = occurrence_rollups_hourly\.event_count \+ EXCLUDED\.event_count/,
+  );
+  assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM live_rollups/);
+  assert.equal(released, true);
+});
 
 test("Roblox games with bracketed update tags remain linkable", async (t) => {
   const originalFetch = globalThis.fetch;
@@ -591,6 +670,9 @@ test("grouped logs bound candidate groups before calculating exact statistics", 
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: null }], rowCount: 1 };
+      }
       if (sql.includes("WITH candidate_groups AS")) {
         groupsSql = sql;
         return { rows: [], rowCount: 0 };
@@ -613,6 +695,65 @@ test("grouped logs bound candidate groups before calculating exact statistics", 
   assert.match(groupsSql, /o\.group_id = candidate_groups\.group_id/);
   assert.match(groupsSql, /JOIN LATERAL/);
   assert.doesNotMatch(groupsSql, /ORDER BY event_count DESC/);
+  await app.close();
+});
+
+test("grouped logs use hourly summaries and raw partial-hour edges", async () => {
+  let groupsSql = "";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM trace_read_model_state")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("WITH combined AS")) {
+        groupsSql = sql;
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/errors?severity=error,warning&sort=recent&limit=25&from=2026-07-20T10:15:00.000Z&to=2026-07-20T13:45:00.000Z",
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(groupsSql, /FROM occurrence_rollups_hourly r/);
+  assert.match(groupsSql, /r\.bucket_at >= \$\d+/);
+  assert.match(groupsSql, /UNION ALL/);
+  assert.match(groupsSql, /FROM occurrences o/);
+  assert.match(groupsSql, /AND NOT \(/);
+  assert.match(groupsSql, /ORDER BY last_seen_at DESC, group_id DESC/);
+  assert.doesNotMatch(groupsSql, /COUNT\(DISTINCT/);
+  assert.doesNotMatch(groupsSql, /JOIN sessions/);
+
+  const aligned = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/errors?severity=error,warning&sort=recent&limit=25&from=2026-07-20T10:00:00.000Z&to=2026-07-20T14:00:00.000Z",
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+  assert.equal(aligned.statusCode, 200);
+  assert.match(groupsSql, /FROM occurrence_rollups_hourly r/);
+  assert.doesNotMatch(groupsSql, /FROM occurrences o/);
   await app.close();
 });
 
@@ -706,7 +847,7 @@ test("read authentication and membership checks reuse short-lived cache", async 
 });
 
 test("activity queries combine raw occurrences with hourly rollups", async () => {
-  let queriedRollups = false;
+  let activitySql = "";
   const bucketAt = new Date();
   bucketAt.setUTCMinutes(0, 0, 0);
   const pool = {
@@ -726,8 +867,14 @@ test("activity queries combine raw occurrences with hourly rollups", async () =>
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
+      }
+      if (sql.includes("FROM trace_read_model_state")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
       if (sql.includes("occurrence_rollups_hourly")) {
-        queriedRollups = true;
+        activitySql = sql;
         return {
           rows: [
             {
@@ -751,7 +898,10 @@ test("activity queries combine raw occurrences with hourly rollups", async () =>
   });
 
   assert.equal(response.statusCode, 200);
-  assert.equal(queriedRollups, true);
+  assert.match(activitySql, /FROM occurrences o/);
+  assert.match(activitySql, /FROM occurrence_rollups_hourly r/);
+  assert.match(activitySql, /AND NOT \(/);
+  assert.match(activitySql, /UNION ALL/);
   const bucket = response
     .json()
     .data.find((row: { startAt: string }) => row.startAt === bucketAt.toISOString());
@@ -761,6 +911,17 @@ test("activity queries combine raw occurrences with hourly rollups", async () =>
     clientCount: 12,
     serverCount: 3,
   });
+
+  const alignedFrom = new Date(bucketAt.getTime() - 23 * 60 * 60 * 1_000);
+  const alignedTo = new Date(bucketAt.getTime() + 60 * 60 * 1_000);
+  const aligned = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/activity?from=${encodeURIComponent(alignedFrom.toISOString())}&to=${encodeURIComponent(alignedTo.toISOString())}`,
+    headers: { authorization: `Bearer ${"z".repeat(40)}` },
+  });
+  assert.equal(aligned.statusCode, 200);
+  assert.match(activitySql, /FROM occurrence_rollups_hourly r/);
+  assert.doesNotMatch(activitySql, /FROM occurrences o/);
   await app.close();
 });
 

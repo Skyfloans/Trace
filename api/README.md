@@ -226,3 +226,18 @@ Before a partition is dropped, counts are compacted into hourly project/error
 rollups retained for three days. Activity charts combine raw and rolled-up
 counts without expanding repeats. Messages, stacks, sessions, and individual
 occurrence inspection remain raw-data features.
+
+Migration 009 makes those hourly rows a live read model. Ingestion updates the
+raw occurrence and its hourly total in the same transaction. Grouped-log and
+activity reads aggregate hourly totals for complete hours and touch raw
+occurrences only at partial-hour edges. Apply it safely in this order:
+
+1. Deploy the API code that dual-writes hourly totals.
+2. Apply `database/migrations/009_live_error_group_rollups.sql` once. Its
+   transaction briefly holds occurrence writes while it backfills and then
+   publishes the readiness marker atomically.
+3. Confirm the `live_error_group_rollups_v1` row exists in
+   `trace_read_model_state`.
+
+Until the marker exists, the API automatically uses raw-data queries, so the
+code deployment and database cutover do not have to occur simultaneously.

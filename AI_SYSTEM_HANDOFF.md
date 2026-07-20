@@ -144,6 +144,7 @@ database/migrations/005_tiered_retention.sql
 database/migrations/006_feedback.sql
 database/migrations/007_feedback_length.sql
 database/migrations/008_roblox_oauth_and_project_management.sql
+database/migrations/009_live_error_group_rollups.sql
 ```
 
 Apply them once, in order, to a new database. They are normal sequential
@@ -341,7 +342,9 @@ It repeats maintenance hourly.
 
 Occurrence partitions are created from three days in the past through three
 days ahead. Before an expired raw partition is dropped, migration 005 compacts
-its counts into hourly rollups retained for three days.
+its counts into hourly rollups retained for three days. Migration 009 also
+maintains those rollups transactionally for live events so grouped-log and
+activity list pages do not scan the full occurrence window.
 
 The ingestion API rejects events:
 
@@ -735,7 +738,8 @@ bundle:
 
 Recommended structural read optimization:
 
-- Add hourly error/activity rollup tables.
+- Keep the migration 009 hourly error/activity read model healthy and monitor
+  summary-vs-raw query latency.
 - Add maintained session error/warning counters.
 - Add a combined dashboard endpoint that authenticates once and runs project,
   grouped-error, and activity queries concurrently.
@@ -940,11 +944,13 @@ dist/
      `https://api.tracestack.gg/v1/auth/roblox/callback`
 7. Implement proper production login/session issuance/logout.
 8. Apply migration 005 before deploying the second optimization pass.
-9. Verify 60-second repeat aggregation and five-minute heartbeats against live
+9. Deploy the dual-write API, then apply migration 009 to backfill and enable
+   the live hourly read model.
+10. Verify 60-second repeat aggregation and five-minute heartbeats against live
    traffic.
-10. Audit production index usage after enough representative traffic exists.
-11. Improve `MessageError` fallback capture and dropped-event metrics.
-12. Ask before deleting the intentionally retained Roblox test scripts.
+11. Audit production index usage after enough representative traffic exists.
+12. Improve `MessageError` fallback capture and dropped-event metrics.
+13. Ask before deleting the intentionally retained Roblox test scripts.
 
 ## 21. Existing documentation to trust
 

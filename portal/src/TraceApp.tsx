@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import {
   ApiError, apiDelete, apiGet, apiPost, apiUrl, getRobloxGameMetadata, getRobloxPlayerHeadshots, projectPath, queryString, timeRange,
-  type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type FeedbackEntry, type GroupedError,
+  type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type FeedbackEntry, type GroupedError, type GroupedErrorSummary,
   type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
   type RobloxGameMetadata, type ServerJob, type Session, type Severity,
 } from './api'
@@ -585,10 +585,10 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
     `${project.id}:${timeRangeValue}:${severity}:${side}:activity`,
   )
   const grouped = useResource(
-    (signal) => apiGet<CursorPage<GroupedError>>(projectPath(project.id, `/errors${filters}`), signal),
+    (signal) => apiGet<CursorPage<GroupedErrorSummary>>(projectPath(project.id, `/errors${filters}`), signal),
     `${project.id}:${timeRangeValue}:${severity}:${side}:errors`,
   )
-  const [additionalErrors, setAdditionalErrors] = useState<GroupedError[]>([])
+  const [additionalErrors, setAdditionalErrors] = useState<GroupedErrorSummary[]>([])
   const [errorCursor, setErrorCursor] = useState<string | null>(null)
   const [loadingMoreErrors, setLoadingMoreErrors] = useState(false)
   const [paginationError, setPaginationError] = useState<ApiError | null>(null)
@@ -607,7 +607,7 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
     setPaginationError(null)
     try {
       const separator = filters ? '&' : '?'
-      const result = await apiGet<CursorPage<GroupedError>>(projectPath(project.id, `/errors${filters}${separator}cursor=${encodeURIComponent(errorCursor)}`))
+      const result = await apiGet<CursorPage<GroupedErrorSummary>>(projectPath(project.id, `/errors${filters}${separator}cursor=${encodeURIComponent(errorCursor)}`))
       setAdditionalErrors((current) => [...current, ...result.data])
       setErrorCursor(result.nextCursor)
     } catch (reason) {
@@ -1287,7 +1287,7 @@ function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId,
   const pageCursor = pageCursors[page - 1] ?? null
   const requestPath = `${path}${pageCursor ? `${path.includes('?') ? '&' : '?'}cursor=${encodeURIComponent(pageCursor)}` : ''}`
   const groupsResource = useResource(
-    (signal) => apiGet<CursorPage<GroupedError>>(requestPath, signal),
+    (signal) => apiGet<CursorPage<GroupedErrorSummary>>(requestPath, signal),
     `${project.id}:${requestPath}:grouped-logs`,
   )
   const groups = groupsResource.data?.data ?? []

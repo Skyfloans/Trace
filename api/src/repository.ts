@@ -455,7 +455,8 @@ async function insertEvents(
          original_message, original_stack, context
        FROM input
        ON CONFLICT (id, occurred_at) DO NOTHING
-       RETURNING group_id, occurred_at, last_occurred_at, repeat_count
+       RETURNING
+         group_id, session_id, occurred_at, last_occurred_at, repeat_count
      ),
      totals AS (
        SELECT
@@ -465,6 +466,44 @@ async function insertEvents(
          SUM(repeat_count)::bigint AS occurrence_count
        FROM inserted
        GROUP BY group_id
+     ),
+     live_rollups AS (
+       INSERT INTO occurrence_rollups_hourly (
+         project_id, group_id, bucket_at, event_count,
+         affected_player_count, affected_server_count,
+         first_seen_at, last_seen_at
+       )
+       SELECT
+         $1,
+         inserted.group_id,
+         date_trunc('hour', inserted.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC',
+         SUM(inserted.repeat_count)::bigint,
+         COUNT(DISTINCT sessions.player_id)::int,
+         1,
+         MIN(inserted.occurred_at),
+         MAX(COALESCE(inserted.last_occurred_at, inserted.occurred_at))
+       FROM inserted
+       LEFT JOIN sessions ON sessions.id = inserted.session_id
+       GROUP BY inserted.group_id, 3
+       ON CONFLICT (project_id, group_id, bucket_at) DO UPDATE
+       SET event_count = occurrence_rollups_hourly.event_count + EXCLUDED.event_count,
+           affected_player_count = GREATEST(
+             occurrence_rollups_hourly.affected_player_count,
+             EXCLUDED.affected_player_count
+           ),
+           affected_server_count = GREATEST(
+             occurrence_rollups_hourly.affected_server_count,
+             EXCLUDED.affected_server_count
+           ),
+           first_seen_at = LEAST(
+             occurrence_rollups_hourly.first_seen_at,
+             EXCLUDED.first_seen_at
+           ),
+           last_seen_at = GREATEST(
+             occurrence_rollups_hourly.last_seen_at,
+             EXCLUDED.last_seen_at
+           )
+       RETURNING group_id
      ),
      updated AS (
        UPDATE error_groups groups
@@ -477,7 +516,8 @@ async function insertEvents(
      )
      SELECT
        COALESCE(SUM(inserted.repeat_count), 0)::int AS accepted,
-       (SELECT COUNT(*) FROM updated) AS updated_group_count
+       (SELECT COUNT(*) FROM updated) AS updated_group_count,
+       (SELECT COUNT(*) FROM live_rollups) AS updated_rollup_count
      FROM inserted`,
     [projectId, jobId, JSON.stringify(occurrences)],
   );

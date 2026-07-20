@@ -26,9 +26,11 @@ the signed-in Roblox user's identity and project memberships are used.
 - All Roblox identifiers are JSON strings.
 - List endpoints use opaque keyset cursors, never offsets.
 - Grouped error pages accept `sort=count` (the default) or `sort=recent`.
-  Recent pages bound each page before calculating exact occurrence, player,
-  and server totals, so a noisy project does not aggregate every retained
-  group before returning.
+  After migration 009, list totals come from hourly summaries plus raw events
+  at partial-hour edges. The list intentionally omits affected-player,
+  affected-server, and latest-occurrence fields; those exact values are loaded
+  only after opening a group. Before migration 009 is ready, recent pages use
+  a bounded raw-data fallback.
 - High-volume queries default to the last 24 hours. Detailed occurrence data is
   retained for at least 24 hours; compact hourly activity totals remain
   available for three days.
@@ -83,9 +85,11 @@ session with server events from the same job that occurred during that
 session's time window. Occurrence lists return sampled aggregate rows rather
 than expanding repeated events back into duplicate JSON objects.
 
-Activity buckets older than raw retention are reconstructed from hourly
-rollups. Minute buckets in that older period place the hour's total at the
-start of the hour because per-minute detail has intentionally expired.
+Activity and grouped-error queries use hourly rollups for complete hours and
+raw occurrences only for partial-hour edges. Minute buckets place an hourly
+summary at the start of that hour. The portal aligns its standard 8-hour,
+24-hour, and 3-day ranges to hour boundaries so those pages stay on the summary
+path.
 
 Query parameters and response shapes follow
 `Trace_Portal/READ_API_HANDOFF.md`.

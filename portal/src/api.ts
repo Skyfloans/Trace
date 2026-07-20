@@ -124,17 +124,20 @@ export type LogOccurrence = {
   correlation?: Correlation
 }
 
-export type GroupedError = {
+export type GroupedErrorSummary = {
   fingerprint: string
   severity: Severity
   side: LogSide
   title: string
   source: string | null
   count: number
-  affectedPlayerCount: number
-  affectedServerCount: number
   firstSeenAt: string
   lastSeenAt: string
+}
+
+export type GroupedError = GroupedErrorSummary & {
+  affectedPlayerCount: number
+  affectedServerCount: number
   latestOccurrenceId: string
 }
 
@@ -306,8 +309,9 @@ export function projectPath(projectId: string, resource: string) {
 }
 
 export function timeRange(hours: number) {
-  const minute = 60 * 1_000
-  const to = new Date(Math.floor(Date.now() / minute) * minute)
-  const from = new Date(to.getTime() - hours * 60 * 60 * 1000)
+  const hour = 60 * 60 * 1_000
+  const currentHour = Math.floor(Date.now() / hour) * hour
+  const from = new Date(currentHour - (hours - 1) * hour)
+  const to = new Date(currentHour + hour)
   return { from: from.toISOString(), to: to.toISOString() }
 }

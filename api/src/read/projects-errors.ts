@@ -14,6 +14,7 @@ import {
 } from "./http.js";
 import { mapOccurrence, occurrenceSelect } from "./mappers.js";
 import { QueryParameters } from "./query.js";
+import { liveErrorGroupRollupsReady } from "./rollups.js";
 import {
   requireProjectMembership,
   requireReadUser,
@@ -50,6 +51,28 @@ function readListFilters(query: Record<string, unknown>) {
       typeof query.side === "string" ? query.side : undefined,
       sideSchema,
     ),
+  };
+}
+
+const hourMs = 60 * 60 * 1_000;
+
+function completeHourRange(time: { from: Date; to: Date }): {
+  from: Date;
+  to: Date;
+  hasCompleteHours: boolean;
+  hasRawEdges: boolean;
+} {
+  const fromTime = time.from.getTime();
+  const toTime = time.to.getTime();
+  const completeFrom = Math.ceil(fromTime / hourMs) * hourMs;
+  const completeTo = Math.floor(toTime / hourMs) * hourMs;
+  const hasCompleteHours = completeFrom < completeTo;
+  return {
+    from: new Date(completeFrom),
+    to: new Date(completeTo),
+    hasCompleteHours,
+    hasRawEdges:
+      !hasCompleteHours || fromTime < completeFrom || completeTo < toTime,
   };
 }
 
@@ -123,187 +146,208 @@ export async function registerProjectAndErrorRoutes(
       await requireProjectMembership(pool, request, projectId);
       const query = request.query as Record<string, unknown>;
       const { time, severities, sides } = readListFilters(query);
-      const limit = clampLimit(
-        query.limit as string | undefined,
-        50,
-        100,
-      );
+      const limit = clampLimit(query.limit as string | undefined, 50, 100);
       const sort = z
         .enum(["count", "recent"])
         .parse(typeof query.sort === "string" ? query.sort : "count");
+      const rollupsReady = await liveErrorGroupRollupsReady(pool);
       const parameters = new QueryParameters();
       const project = parameters.add(projectId);
       const from = parameters.add(time.from);
       const to = parameters.add(time.to);
       const severity = parameters.addArray(severities);
-      const groupConditions = [
+      const metadataConditions = [
         `eg.project_id = ${project}`,
         `eg.last_seen_at >= ${from}`,
         `eg.first_seen_at < ${to}`,
         `eg.level = ANY(${severity}::log_level[])`,
       ];
       if (sides) {
-        groupConditions.push(
+        metadataConditions.push(
           `eg.source = ANY(${parameters.addArray(sides)}::log_source[])`,
         );
       }
 
-      let groupCursorCondition = "";
-      let statsCursorCondition = "";
+      let cursorValues: Array<string | number | null> | null = null;
       if (typeof query.cursor === "string") {
-        const values = decodeCursor(query.cursor);
+        cursorValues = decodeCursor(query.cursor);
         if (
-          values.length !== 3 ||
-          typeof values[0] !== "number" ||
-          typeof values[1] !== "string" ||
-          typeof values[2] !== "string"
+          cursorValues.length !== 3 ||
+          typeof cursorValues[0] !== "number" ||
+          typeof cursorValues[1] !== "string" ||
+          typeof cursorValues[2] !== "string"
         ) {
           throw new ReadApiError(400, "invalid_cursor", "Invalid cursor.");
         }
-        if (sort === "recent") {
-          groupCursorCondition = `AND (eg.last_seen_at, eg.id)
-            < (${parameters.add(values[1])}, ${parameters.add(values[2])})`;
-        } else {
-          statsCursorCondition = `WHERE (stats.event_count, stats.last_seen_at, stats.group_id)
-            < (${parameters.add(values[0])}, ${parameters.add(values[1])}, ${parameters.add(values[2])})`;
-        }
       }
-      const rowLimit = parameters.add(limit + 1);
+      let sql: string;
+      if (rollupsReady) {
+        const complete = completeHourRange(time);
+        const completeFrom = parameters.add(complete.from);
+        const completeTo = parameters.add(complete.to);
+        const segments: string[] = [];
+        if (complete.hasCompleteHours) {
+          segments.push(`SELECT
+            r.group_id,
+            r.event_count,
+            r.first_seen_at,
+            r.last_seen_at
+          FROM occurrence_rollups_hourly r
+          WHERE r.project_id = ${project}
+            AND r.bucket_at >= ${completeFrom}
+            AND r.bucket_at < ${completeTo}`);
+        }
+        if (complete.hasRawEdges) {
+          const excludeCompleteHours = complete.hasCompleteHours
+            ? `AND NOT (
+              o.occurred_at >= ${completeFrom}
+              AND o.occurred_at < ${completeTo}
+            )`
+            : "";
+          segments.push(`SELECT
+            o.group_id,
+            SUM(o.repeat_count)::bigint AS event_count,
+            MIN(o.occurred_at) AS first_seen_at,
+            MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
+          FROM occurrences o
+          WHERE o.project_id = ${project}
+            AND o.occurred_at >= ${from}
+            AND o.occurred_at < ${to}
+            ${excludeCompleteHours}
+          GROUP BY o.group_id`);
+        }
+        let cursorCondition = "";
+        if (cursorValues) {
+          cursorCondition = sort === "recent"
+            ? `WHERE (last_seen_at, group_id) < (${parameters.add(cursorValues[1])}, ${parameters.add(cursorValues[2])})`
+            : `WHERE (event_count, last_seen_at, group_id) < (${parameters.add(cursorValues[0])}, ${parameters.add(cursorValues[1])}, ${parameters.add(cursorValues[2])})`;
+        }
+        const rowLimit = parameters.add(limit + 1);
+        const order = sort === "recent"
+          ? "last_seen_at DESC, group_id DESC"
+          : "event_count DESC, last_seen_at DESC, group_id DESC";
+        sql = `WITH combined AS (
+          ${segments.join("\n          UNION ALL\n          ")}
+        ),
+        stats AS (
+          SELECT
+            group_id,
+            SUM(event_count)::int AS event_count,
+            MIN(first_seen_at) AS first_seen_at,
+            MAX(last_seen_at) AS last_seen_at
+          FROM combined
+          GROUP BY group_id
+        ),
+        filtered AS (
+          SELECT
+            stats.*,
+            eg.fingerprint,
+            eg.level,
+            eg.source,
+            eg.normalized_message,
+            eg.source_script
+          FROM stats
+          JOIN error_groups eg ON eg.id = stats.group_id
+          WHERE ${metadataConditions.join(" AND ")}
+        ),
+        paged AS (
+          SELECT *
+          FROM filtered
+          ${cursorCondition}
+          ORDER BY ${order}
+          LIMIT ${rowLimit}
+        )
+        SELECT *
+        FROM paged
+        ORDER BY ${order}`;
+      } else if (sort === "recent") {
+        let groupCursorCondition = "";
+        if (cursorValues) {
+          groupCursorCondition = `AND (eg.last_seen_at, eg.id)
+            < (${parameters.add(cursorValues[1])}, ${parameters.add(cursorValues[2])})`;
+        }
+        const rowLimit = parameters.add(limit + 1);
+        sql = `WITH candidate_groups AS (
+          SELECT
+            eg.id AS group_id,
+            eg.last_seen_at AS cursor_last_seen_at
+          FROM error_groups eg
+          WHERE ${metadataConditions.join(" AND ")}
+            ${groupCursorCondition}
+          ORDER BY eg.last_seen_at DESC, eg.id DESC
+          LIMIT ${rowLimit}
+        )
+        SELECT
+          candidate_groups.group_id,
+          candidate_groups.cursor_last_seen_at,
+          group_stats.event_count,
+          group_stats.first_seen_at,
+          group_stats.last_seen_at,
+          eg.fingerprint,
+          eg.level,
+          eg.source,
+          eg.normalized_message,
+          eg.source_script
+        FROM candidate_groups
+        JOIN LATERAL (
+          SELECT
+            SUM(o.repeat_count)::int AS event_count,
+            MIN(o.occurred_at) AS first_seen_at,
+            MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
+          FROM occurrences o
+          WHERE o.project_id = ${project}
+            AND o.group_id = candidate_groups.group_id
+            AND o.occurred_at >= ${from}
+            AND o.occurred_at < ${to}
+        ) group_stats ON group_stats.event_count IS NOT NULL
+        JOIN error_groups eg ON eg.id = candidate_groups.group_id
+        ORDER BY candidate_groups.cursor_last_seen_at DESC, candidate_groups.group_id DESC`;
+      } else {
+        let cursorCondition = "";
+        if (cursorValues) {
+          cursorCondition = `WHERE (event_count, last_seen_at, group_id)
+            < (${parameters.add(cursorValues[0])}, ${parameters.add(cursorValues[1])}, ${parameters.add(cursorValues[2])})`;
+        }
+        const rowLimit = parameters.add(limit + 1);
+        sql = `WITH stats AS (
+          SELECT
+            o.group_id,
+            SUM(o.repeat_count)::int AS event_count,
+            MIN(o.occurred_at) AS first_seen_at,
+            MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
+          FROM occurrences o
+          JOIN error_groups eg ON eg.id = o.group_id
+          WHERE o.project_id = ${project}
+            AND o.occurred_at >= ${from}
+            AND o.occurred_at < ${to}
+            AND ${metadataConditions.join(" AND ")}
+          GROUP BY o.group_id
+        ),
+        paged AS (
+          SELECT *
+          FROM stats
+          ${cursorCondition}
+          ORDER BY event_count DESC, last_seen_at DESC, group_id DESC
+          LIMIT ${rowLimit}
+        )
+        SELECT
+          paged.*,
+          eg.fingerprint,
+          eg.level,
+          eg.source,
+          eg.normalized_message,
+          eg.source_script
+        FROM paged
+        JOIN error_groups eg ON eg.id = paged.group_id
+        ORDER BY paged.event_count DESC, paged.last_seen_at DESC, paged.group_id DESC`;
+      }
 
-      const result = await pool.query(
-        sort === "recent"
-          ? `WITH candidate_groups AS (
-           SELECT
-             eg.id AS group_id,
-             eg.last_seen_at AS cursor_last_seen_at
-           FROM error_groups eg
-           WHERE ${groupConditions.join(" AND ")}
-             ${groupCursorCondition}
-           ORDER BY eg.last_seen_at DESC, eg.id DESC
-           LIMIT ${rowLimit}
-         ),
-         stats AS (
-           SELECT
-             candidate_groups.group_id,
-             candidate_groups.cursor_last_seen_at,
-             group_stats.event_count,
-             group_stats.affected_player_count,
-             group_stats.affected_server_count,
-             group_stats.first_seen_at,
-             group_stats.last_seen_at
-           FROM candidate_groups
-           JOIN LATERAL (
-             SELECT
-               SUM(o.repeat_count)::int AS event_count,
-               COUNT(DISTINCT s.player_id)::int AS affected_player_count,
-               COUNT(DISTINCT o.job_id)::int AS affected_server_count,
-               MIN(o.occurred_at) AS first_seen_at,
-               MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
-             FROM occurrences o
-             LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.project_id = ${project}
-               AND o.group_id = candidate_groups.group_id
-               AND o.occurred_at >= ${from}
-               AND o.occurred_at < ${to}
-           ) group_stats ON group_stats.event_count IS NOT NULL
-         )
-         SELECT
-           stats.group_id,
-           stats.cursor_last_seen_at,
-           stats.event_count,
-           stats.affected_player_count,
-           stats.affected_server_count,
-           stats.first_seen_at,
-           stats.last_seen_at,
-           latest.id AS latest_occurrence_id,
-           eg.fingerprint,
-           eg.level,
-           eg.source,
-           eg.normalized_message,
-           eg.source_script
-         FROM stats
-         JOIN error_groups eg ON eg.id = stats.group_id
-         JOIN LATERAL (
-           SELECT o.id
-           FROM occurrences o
-           WHERE o.project_id = ${project}
-             AND o.group_id = stats.group_id
-             AND o.occurred_at >= ${from}
-             AND o.occurred_at < ${to}
-           ORDER BY o.occurred_at DESC, o.id DESC
-           LIMIT 1
-         ) latest ON true
-         ORDER BY stats.cursor_last_seen_at DESC, stats.group_id DESC`
-          : `WITH candidate_groups AS (
-           SELECT eg.id AS group_id
-           FROM error_groups eg
-           WHERE ${groupConditions.join(" AND ")}
-         ),
-         stats AS (
-           SELECT
-             candidate_groups.group_id,
-             group_stats.event_count,
-             group_stats.affected_player_count,
-             group_stats.affected_server_count,
-             group_stats.first_seen_at,
-             group_stats.last_seen_at
-           FROM candidate_groups
-           JOIN LATERAL (
-             SELECT
-               SUM(o.repeat_count)::int AS event_count,
-               COUNT(DISTINCT s.player_id)::int AS affected_player_count,
-               COUNT(DISTINCT o.job_id)::int AS affected_server_count,
-               MIN(o.occurred_at) AS first_seen_at,
-               MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
-             FROM occurrences o
-             LEFT JOIN sessions s ON s.id = o.session_id
-             WHERE o.project_id = ${project}
-               AND o.group_id = candidate_groups.group_id
-               AND o.occurred_at >= ${from}
-               AND o.occurred_at < ${to}
-           ) group_stats ON group_stats.event_count IS NOT NULL
-         ),
-         paged AS (
-           SELECT *
-           FROM stats
-           ${statsCursorCondition}
-           ORDER BY event_count DESC, last_seen_at DESC, group_id DESC
-           LIMIT ${rowLimit}
-         )
-         SELECT
-           paged.group_id,
-           paged.last_seen_at AS cursor_last_seen_at,
-           paged.event_count,
-           paged.affected_player_count,
-           paged.affected_server_count,
-           paged.first_seen_at,
-           paged.last_seen_at,
-           latest.id AS latest_occurrence_id,
-           eg.fingerprint,
-           eg.level,
-           eg.source,
-           eg.normalized_message,
-           eg.source_script
-         FROM paged
-         JOIN error_groups eg ON eg.id = paged.group_id
-         JOIN LATERAL (
-           SELECT o.id
-           FROM occurrences o
-           WHERE o.project_id = ${project}
-             AND o.group_id = paged.group_id
-             AND o.occurred_at >= ${from}
-             AND o.occurred_at < ${to}
-           ORDER BY o.occurred_at DESC, o.id DESC
-           LIMIT 1
-         ) latest ON true
-         ORDER BY paged.event_count DESC, paged.last_seen_at DESC, paged.group_id DESC`,
-        parameters.values,
-      );
+      const result = await pool.query(sql, parameters.values);
 
       const hasMore = result.rows.length > limit;
       const rows = result.rows.slice(0, limit);
       const last = rows.at(-1);
-      cache(reply);
+      cache(reply, 10);
       return {
         data: rows.map((row) => ({
           fingerprint: row.fingerprint,
@@ -311,18 +355,15 @@ export async function registerProjectAndErrorRoutes(
           side: row.source,
           title: row.normalized_message,
           source: row.source_script,
-          count: row.event_count,
-          affectedPlayerCount: row.affected_player_count,
-          affectedServerCount: row.affected_server_count,
+          count: Number(row.event_count),
           firstSeenAt: iso(row.first_seen_at),
           lastSeenAt: iso(row.last_seen_at),
-          latestOccurrenceId: row.latest_occurrence_id,
         })),
         nextCursor:
           hasMore && last
             ? encodeCursor([
-                last.event_count,
-                iso(last.cursor_last_seen_at),
+                Number(last.event_count),
+                iso(last.cursor_last_seen_at ?? last.last_seen_at),
                 last.group_id,
               ])
             : null,
@@ -496,6 +537,7 @@ export async function registerProjectAndErrorRoutes(
         );
       }
 
+      const rollupsReady = await liveErrorGroupRollupsReady(pool);
       const parameters = new QueryParameters();
       const project = parameters.add(projectId);
       const from = parameters.add(time.from);
@@ -507,47 +549,76 @@ export async function registerProjectAndErrorRoutes(
         `o.occurred_at < ${to}`,
         `eg.level = ANY(${severity}::log_level[])`,
       ];
-      const rollupConditions = [
-        `r.project_id = ${project}`,
-        `r.bucket_at >= date_trunc('hour', ${from}::timestamptz)`,
-        `r.bucket_at < ${to}`,
-        `eg.level = ANY(${severity}::log_level[])`,
-      ];
-      if (sides) {
-        const side = parameters.addArray(sides);
-        rawConditions.push(`eg.source = ANY(${side}::log_source[])`);
-        rollupConditions.push(`eg.source = ANY(${side}::log_source[])`);
+      const side = sides ? parameters.addArray(sides) : null;
+      if (side) rawConditions.push(`eg.source = ANY(${side}::log_source[])`);
+
+      let sql: string;
+      if (rollupsReady) {
+        const complete = completeHourRange(time);
+        const completeFrom = parameters.add(complete.from);
+        const completeTo = parameters.add(complete.to);
+        const segments: string[] = [];
+        if (complete.hasRawEdges) {
+          const edgeConditions = [...rawConditions];
+          if (complete.hasCompleteHours) {
+            edgeConditions.push(`NOT (
+              o.occurred_at >= ${completeFrom}
+              AND o.occurred_at < ${completeTo}
+            )`);
+          }
+          segments.push(`SELECT
+            date_trunc('${bucket}', o.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+            COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
+            COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
+          FROM occurrences o
+          JOIN error_groups eg ON eg.id = o.group_id
+          WHERE ${edgeConditions.join(" AND ")}
+          GROUP BY bucket_at`);
+        }
+        if (complete.hasCompleteHours) {
+          const rollupConditions = [
+            `r.project_id = ${project}`,
+            `r.bucket_at + interval '1 hour' > ${from}`,
+            `r.bucket_at < ${to}`,
+            `r.bucket_at >= ${completeFrom}`,
+            `r.bucket_at < ${completeTo}`,
+            `eg.level = ANY(${severity}::log_level[])`,
+          ];
+          if (side) {
+            rollupConditions.push(`eg.source = ANY(${side}::log_source[])`);
+          }
+          segments.push(`SELECT
+            date_trunc('${bucket}', r.bucket_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+            COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
+            COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
+          FROM occurrence_rollups_hourly r
+          JOIN error_groups eg ON eg.id = r.group_id
+          WHERE ${rollupConditions.join(" AND ")}
+          GROUP BY bucket_at`);
+        }
+        sql = `WITH counts AS (
+          ${segments.join("\n          UNION ALL\n          ")}
+          )
+          SELECT
+            bucket_at,
+            SUM(client_count)::bigint AS client_count,
+            SUM(server_count)::bigint AS server_count
+          FROM counts
+          GROUP BY bucket_at
+          ORDER BY bucket_at`;
+      } else {
+        sql = `SELECT
+          date_trunc('${bucket}', o.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+          COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
+          COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
+        FROM occurrences o
+        JOIN error_groups eg ON eg.id = o.group_id
+        WHERE ${rawConditions.join(" AND ")}
+        GROUP BY bucket_at
+        ORDER BY bucket_at`;
       }
 
-      const result = await pool.query(
-        `WITH counts AS (
-           SELECT
-             date_trunc('${bucket}', o.occurred_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
-             COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
-             COALESCE(SUM(o.repeat_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
-           FROM occurrences o
-           JOIN error_groups eg ON eg.id = o.group_id
-           WHERE ${rawConditions.join(" AND ")}
-           GROUP BY bucket_at
-           UNION ALL
-           SELECT
-             date_trunc('${bucket}', r.bucket_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
-             COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
-             COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
-           FROM occurrence_rollups_hourly r
-           JOIN error_groups eg ON eg.id = r.group_id
-           WHERE ${rollupConditions.join(" AND ")}
-           GROUP BY bucket_at
-         )
-         SELECT
-           bucket_at,
-           SUM(client_count)::bigint AS client_count,
-           SUM(server_count)::bigint AS server_count
-         FROM counts
-         GROUP BY bucket_at
-         ORDER BY bucket_at`,
-        parameters.values,
-      );
+      const result = await pool.query(sql, parameters.values);
       const counts = new Map(
         result.rows.map((row) => [
           new Date(row.bucket_at).getTime(),
