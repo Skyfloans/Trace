@@ -7,7 +7,7 @@ import {
 } from 'lucide-react'
 import {
   ApiError, apiDelete, apiGet, apiPost, apiUrl, getRobloxGameMetadata, getRobloxPlayerHeadshots, projectPath, queryString, timeRange,
-  type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type FeedbackEntry, type GroupedError, type GroupedErrorSummary,
+  type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type ErrorMessageVariant, type FeedbackEntry, type GroupedError, type GroupedErrorSummary,
   type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
   type RobloxGameMetadata, type ServerJob, type Session, type Severity,
 } from './api'
@@ -1491,6 +1491,43 @@ function StackTracePanel({ trace }: { trace: string }) {
   )
 }
 
+function MessageVariants({ project, fingerprint, normalized }: { project: Project; fingerprint: string; normalized: boolean }) {
+  const [page, setPage] = useState(1)
+  const [pageCursors, setPageCursors] = useState<Array<string | null>>([null])
+  const pageCursor = pageCursors[page - 1] ?? null
+  const query = queryString({ limit: 50, cursor: pageCursor })
+  const variants = useResource(
+    (signal) => apiGet<CursorPage<ErrorMessageVariant>>(projectPath(project.id, `/errors/${fingerprint}/variants${query}`), signal),
+    `${project.id}:${fingerprint}:variants:${pageCursor ?? 'first'}`,
+  )
+  useEffect(() => {
+    setPage(1)
+    setPageCursors([null])
+  }, [fingerprint, project.id])
+
+  const nextPage = () => {
+    const cursor = variants.data?.nextCursor
+    if (!cursor || variants.loading) return
+    setPageCursors((current) => {
+      const updated = [...current]
+      updated[page] = cursor
+      return updated
+    })
+    setPage((current) => current + 1)
+  }
+  const previousPage = () => {
+    if (page === 1 || variants.loading) return
+    setPage((current) => current - 1)
+  }
+
+  return (
+    <section className="data-section message-variants">
+      <div className="section-heading"><div><h2>Original message variants</h2><p>{normalized ? <>Numeric identifiers are grouped as <code>&lt;ID&gt;</code>; every original value remains available here.</> : 'Distinct raw messages represented by this group.'}</p></div></div>
+      {variants.error ? <InlineError error={variants.error} retry={variants.reload} /> : !variants.data ? <RowsLoading /> : variants.data.data.length ? <><div className="variant-list">{variants.data.data.map((variant) => <article key={variant.message}><strong title={`${exactNumberFormatter.format(variant.count)} occurrences`}>{formatCount(variant.count)}×</strong><code>{variant.message}</code><time dateTime={variant.lastSeenAt}>Latest · {formatDate(variant.lastSeenAt)}</time></article>)}</div>{(page > 1 || variants.data.nextCursor) && <Pagination page={page} hasNext={Boolean(variants.data.nextCursor)} loading={variants.loading} onPrevious={previousPage} onNext={nextPage} label="Message variant pages" />}</> : <PageStatus compact title="No retained variants" copy="The group exists, but its raw message variants have expired." />}
+    </section>
+  )
+}
+
 function ErrorDetails({ project, fingerprint, onBack, onOpenOccurrence }: { project: Project; fingerprint: string; onBack: () => void; onOpenOccurrence: (occurrence: LogOccurrence) => void }) {
   const [page, setPage] = useState(1)
   const [pageCursors, setPageCursors] = useState<Array<string | null>>([null])
@@ -1528,6 +1565,7 @@ function ErrorDetails({ project, fingerprint, onBack, onOpenOccurrence }: { proj
       <ErrorCodeBlock error={error} occurrence={detail.data.latestOccurrence} />
       <dl className="detail-stats"><div><dt>Occurrences</dt><dd>{error.count}</dd></div><div><dt>Affected players</dt><dd>{error.affectedPlayerCount}</dd></div><div><dt>Server jobs</dt><dd>{error.affectedServerCount}</dd></div><div><dt>First seen</dt><dd>{formatDate(error.firstSeenAt)}</dd></div><div><dt>Last seen</dt><dd>{formatDate(error.lastSeenAt)}</dd></div></dl>
       {detail.data.latestOccurrence.stackTrace && <StackTracePanel trace={detail.data.latestOccurrence.stackTrace} />}
+      <MessageVariants project={project} fingerprint={fingerprint} normalized={error.title.includes('<ID>')} />
       <section className="data-section"><div className="section-heading"><div><h2>Occurrences</h2><p>Newest occurrences in the selected retention window · Page {page}</p></div></div>{occurrences.error ? <InlineError error={occurrences.error} retry={occurrences.reload} /> : !occurrences.data ? <RowsLoading /> : occurrences.data.data.length ? <><OccurrenceList occurrences={occurrences.data.data} onOpen={onOpenOccurrence} />{(page > 1 || occurrences.data.nextCursor) && <Pagination page={page} hasNext={Boolean(occurrences.data.nextCursor)} loading={occurrences.loading} onPrevious={previousPage} onNext={nextPage} label="Occurrence pages" />}</> : <PageStatus compact title="No retained occurrences" copy="The grouped error exists, but its raw occurrences have expired." />}</section>
     </div>
   )

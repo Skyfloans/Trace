@@ -8,6 +8,10 @@ const isoTimestampPattern =
 const memoryAddressPattern = /\b0x[0-9a-f]+\b/gi;
 const replicatedMountPlayerIdPattern = /(ReplicatedMounts\.)\d{3,20}\b/g;
 const serviceUserIdPattern = /(\bUser\s+)\d{3,20}\b/gi;
+// Roblox asset, product, game pass, user, and application-generated record IDs
+// are all decimal integers. Restrict this fallback to long values so ordinary
+// counts, line numbers, status codes, and version numbers remain meaningful.
+const longNumericIdentifierPattern = /(?<!\d)\d{7,20}(?!\d)/g;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -60,6 +64,10 @@ export function normalizeText(value: string, batch: IngestBatch): string {
     .replace(memoryAddressPattern, "<ADDRESS>");
 }
 
+export function normalizeDisplayText(value: string, batch: IngestBatch): string {
+  return normalizeText(value, batch).replace(longNumericIdentifierPattern, "<ID>");
+}
+
 export function fingerprintEvent(
   event: IngestEvent,
   batch: IngestBatch,
@@ -68,6 +76,9 @@ export function fingerprintEvent(
   normalizedMessage: string;
   normalizedStack: string | null;
   normalizedSourceScript: string | null;
+  displayFingerprint: string;
+  displayMessage: string;
+  displaySourceScript: string | null;
 } {
   const normalizedMessage = normalizeText(event.message, batch);
   const normalizedStack = event.stack
@@ -76,6 +87,10 @@ export function fingerprintEvent(
   const normalizedSourceScript = event.sourceScript
     ? normalizeText(event.sourceScript, batch)
     : null;
+  const displayMessage = normalizeDisplayText(event.message, batch);
+  const displaySourceScript = event.sourceScript
+    ? normalizeDisplayText(event.sourceScript, batch)
+    : null;
 
   const identity = [
     event.source,
@@ -83,11 +98,22 @@ export function fingerprintEvent(
     normalizedSourceScript ?? "",
     normalizedMessage,
   ].join("\0");
+  const displayIdentity = [
+    event.source,
+    event.level,
+    displaySourceScript ?? "",
+    displayMessage,
+  ].join("\0");
 
   return {
     fingerprint: createHash("sha256").update(identity).digest("hex"),
     normalizedMessage,
     normalizedStack,
     normalizedSourceScript,
+    displayFingerprint: createHash("sha256")
+      .update(displayIdentity)
+      .digest("hex"),
+    displayMessage,
+    displaySourceScript,
   };
 }

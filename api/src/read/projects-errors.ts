@@ -240,15 +240,21 @@ export async function registerProjectAndErrorRoutes(
         ),
         filtered AS (
           SELECT
-            stats.*,
-            eg.fingerprint,
+            eg.display_fingerprint AS group_id,
+            eg.display_fingerprint AS fingerprint,
             eg.level,
             eg.source,
-            eg.normalized_message,
-            eg.source_script
+            eg.display_message AS normalized_message,
+            eg.display_source_script AS source_script,
+            SUM(stats.event_count)::int AS event_count,
+            MIN(stats.first_seen_at) AS first_seen_at,
+            MAX(stats.last_seen_at) AS last_seen_at
           FROM stats
           JOIN error_groups eg ON eg.id = stats.group_id
           WHERE ${metadataConditions.join(" AND ")}
+          GROUP BY
+            eg.display_fingerprint, eg.level, eg.source,
+            eg.display_message, eg.display_source_script
         ),
         paged AS (
           SELECT *
@@ -263,31 +269,33 @@ export async function registerProjectAndErrorRoutes(
       } else if (sort === "recent") {
         let groupCursorCondition = "";
         if (cursorValues) {
-          groupCursorCondition = `AND (eg.last_seen_at, eg.id)
+          groupCursorCondition = `HAVING (MAX(eg.last_seen_at), eg.display_fingerprint)
             < (${parameters.add(cursorValues[1])}, ${parameters.add(cursorValues[2])})`;
         }
         const rowLimit = parameters.add(limit + 1);
         sql = `WITH candidate_groups AS (
           SELECT
-            eg.id AS group_id,
-            eg.last_seen_at AS cursor_last_seen_at
+            eg.display_fingerprint AS group_id,
+            eg.display_fingerprint AS fingerprint,
+            eg.level,
+            eg.source,
+            eg.display_message AS normalized_message,
+            eg.display_source_script AS source_script,
+            MAX(eg.last_seen_at) AS cursor_last_seen_at
           FROM error_groups eg
           WHERE ${metadataConditions.join(" AND ")}
-            ${groupCursorCondition}
-          ORDER BY eg.last_seen_at DESC, eg.id DESC
+          GROUP BY
+            eg.display_fingerprint, eg.level, eg.source,
+            eg.display_message, eg.display_source_script
+          ${groupCursorCondition}
+          ORDER BY cursor_last_seen_at DESC, eg.display_fingerprint DESC
           LIMIT ${rowLimit}
         )
         SELECT
-          candidate_groups.group_id,
-          candidate_groups.cursor_last_seen_at,
+          candidate_groups.*,
           group_stats.event_count,
           group_stats.first_seen_at,
-          group_stats.last_seen_at,
-          eg.fingerprint,
-          eg.level,
-          eg.source,
-          eg.normalized_message,
-          eg.source_script
+          group_stats.last_seen_at
         FROM candidate_groups
         JOIN LATERAL (
           SELECT
@@ -295,12 +303,12 @@ export async function registerProjectAndErrorRoutes(
             MIN(o.occurred_at) AS first_seen_at,
             MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
           FROM occurrences o
+          JOIN error_groups occurrence_group ON occurrence_group.id = o.group_id
           WHERE o.project_id = ${project}
-            AND o.group_id = candidate_groups.group_id
+            AND occurrence_group.display_fingerprint = candidate_groups.group_id
             AND o.occurred_at >= ${from}
             AND o.occurred_at < ${to}
         ) group_stats ON group_stats.event_count IS NOT NULL
-        JOIN error_groups eg ON eg.id = candidate_groups.group_id
         ORDER BY candidate_groups.cursor_last_seen_at DESC, candidate_groups.group_id DESC`;
       } else {
         let cursorCondition = "";
@@ -311,7 +319,12 @@ export async function registerProjectAndErrorRoutes(
         const rowLimit = parameters.add(limit + 1);
         sql = `WITH stats AS (
           SELECT
-            o.group_id,
+            eg.display_fingerprint AS group_id,
+            eg.display_fingerprint AS fingerprint,
+            eg.level,
+            eg.source,
+            eg.display_message AS normalized_message,
+            eg.display_source_script AS source_script,
             SUM(o.repeat_count)::int AS event_count,
             MIN(o.occurred_at) AS first_seen_at,
             MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
@@ -321,7 +334,9 @@ export async function registerProjectAndErrorRoutes(
             AND o.occurred_at >= ${from}
             AND o.occurred_at < ${to}
             AND ${metadataConditions.join(" AND ")}
-          GROUP BY o.group_id
+          GROUP BY
+            eg.display_fingerprint, eg.level, eg.source,
+            eg.display_message, eg.display_source_script
         ),
         paged AS (
           SELECT *
@@ -330,15 +345,8 @@ export async function registerProjectAndErrorRoutes(
           ORDER BY event_count DESC, last_seen_at DESC, group_id DESC
           LIMIT ${rowLimit}
         )
-        SELECT
-          paged.*,
-          eg.fingerprint,
-          eg.level,
-          eg.source,
-          eg.normalized_message,
-          eg.source_script
+        SELECT *
         FROM paged
-        JOIN error_groups eg ON eg.id = paged.group_id
         ORDER BY paged.event_count DESC, paged.last_seen_at DESC, paged.group_id DESC`;
       }
 
@@ -386,7 +394,7 @@ export async function registerProjectAndErrorRoutes(
            FROM occurrences o
            JOIN error_groups eg ON eg.id = o.group_id
            WHERE o.project_id = $1
-             AND eg.fingerprint = $2
+             AND eg.display_fingerprint = $2
              AND o.occurred_at >= now() - interval '3 days'
          ),
          stats AS (
@@ -406,11 +414,11 @@ export async function registerProjectAndErrorRoutes(
          )
          SELECT
            stats.*,
-           eg.fingerprint,
+           eg.display_fingerprint AS fingerprint,
            eg.level,
            eg.source AS group_source,
-           eg.normalized_message,
-           eg.source_script,
+           eg.display_message AS normalized_message,
+           eg.display_source_script AS source_script,
            ${occurrenceSelect}
          FROM stats
          JOIN latest o ON true
@@ -468,7 +476,7 @@ export async function registerProjectAndErrorRoutes(
       const parameters = new QueryParameters();
       const conditions = [
         `o.project_id = ${parameters.add(projectId)}`,
-        `eg.fingerprint = ${parameters.add(fingerprint)}`,
+        `eg.display_fingerprint = ${parameters.add(fingerprint)}`,
         `o.occurred_at >= ${parameters.add(time.from)}`,
         `o.occurred_at < ${parameters.add(time.to)}`,
       ];
@@ -506,6 +514,82 @@ export async function registerProjectAndErrorRoutes(
         nextCursor:
           hasMore && last
             ? encodeCursor([iso(last.occurred_at), last.id])
+            : null,
+      };
+    },
+  );
+
+  app.get(
+    "/v1/projects/:projectId/errors/:fingerprint/variants",
+    { preHandler: authenticate },
+    async (request, reply) => {
+      const { projectId, fingerprint } = fingerprintParamsSchema.parse(
+        request.params,
+      );
+      await requireProjectMembership(pool, request, projectId);
+      const query = request.query as Record<string, unknown>;
+      const time = parseTimeRange(
+        typeof query.from === "string" ? query.from : undefined,
+        typeof query.to === "string" ? query.to : undefined,
+      );
+      const limit = clampLimit(query.limit as string | undefined, 50, 100);
+      const parameters = new QueryParameters();
+      const project = parameters.add(projectId);
+      const groupFingerprint = parameters.add(fingerprint);
+      const from = parameters.add(time.from);
+      const to = parameters.add(time.to);
+      let cursorCondition = "";
+
+      if (typeof query.cursor === "string") {
+        const values = decodeCursor(query.cursor);
+        if (
+          values.length !== 2 ||
+          typeof values[0] !== "string" ||
+          typeof values[1] !== "string"
+        ) {
+          throw new ReadApiError(400, "invalid_cursor", "Invalid cursor.");
+        }
+        cursorCondition = `WHERE (last_seen_at, message) < (
+          ${parameters.add(values[0])}, ${parameters.add(values[1])}
+        )`;
+      }
+
+      const result = await pool.query(
+        `WITH variants AS (
+           SELECT
+             COALESCE(o.original_message, eg.normalized_message) AS message,
+             SUM(o.repeat_count)::int AS event_count,
+             MIN(o.occurred_at) AS first_seen_at,
+             MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
+           FROM occurrences o
+           JOIN error_groups eg ON eg.id = o.group_id
+           WHERE o.project_id = ${project}
+             AND eg.display_fingerprint = ${groupFingerprint}
+             AND o.occurred_at >= ${from}
+             AND o.occurred_at < ${to}
+           GROUP BY COALESCE(o.original_message, eg.normalized_message)
+         )
+         SELECT *
+         FROM variants
+         ${cursorCondition}
+         ORDER BY last_seen_at DESC, message DESC
+         LIMIT ${parameters.add(limit + 1)}`,
+        parameters.values,
+      );
+      const hasMore = result.rows.length > limit;
+      const rows = result.rows.slice(0, limit);
+      const last = rows.at(-1);
+      cache(reply);
+      return {
+        data: rows.map((row) => ({
+          message: String(row.message),
+          count: Number(row.event_count),
+          firstSeenAt: iso(row.first_seen_at),
+          lastSeenAt: iso(row.last_seen_at),
+        })),
+        nextCursor:
+          hasMore && last
+            ? encodeCursor([iso(last.last_seen_at), String(last.message)])
             : null,
       };
     },

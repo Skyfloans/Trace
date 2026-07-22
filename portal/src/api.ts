@@ -146,6 +146,13 @@ export type ErrorDetail = {
   latestOccurrence: LogOccurrence
 }
 
+export type ErrorMessageVariant = {
+  message: string
+  count: number
+  firstSeenAt: string
+  lastSeenAt: string
+}
+
 export type ActivityBucket = {
   startAt: string
   endAt: string

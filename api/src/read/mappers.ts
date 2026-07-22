@@ -82,7 +82,7 @@ export const occurrenceSelect = `
   COALESCE(o.original_message, eg.normalized_message) AS message,
   eg.source_script AS source,
   COALESCE(o.original_stack, eg.normalized_stack) AS stack_trace,
-  eg.fingerprint,
+  eg.display_fingerprint AS fingerprint,
   o.job_id AS server_job_id,
   o.session_id,
   s.player_id,

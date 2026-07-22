@@ -691,8 +691,9 @@ test("grouped logs bound candidate groups before calculating exact statistics", 
   assert.equal(response.statusCode, 200);
   assert.match(groupsSql, /FROM error_groups eg/);
   assert.match(groupsSql, /eg\.last_seen_at >= \$\d+/);
-  assert.match(groupsSql, /ORDER BY eg\.last_seen_at DESC, eg\.id DESC\s+LIMIT \$\d+/);
-  assert.match(groupsSql, /o\.group_id = candidate_groups\.group_id/);
+  assert.match(groupsSql, /GROUP BY\s+eg\.display_fingerprint/);
+  assert.match(groupsSql, /ORDER BY cursor_last_seen_at DESC, eg\.display_fingerprint DESC\s+LIMIT \$\d+/);
+  assert.match(groupsSql, /occurrence_group\.display_fingerprint = candidate_groups\.group_id/);
   assert.match(groupsSql, /JOIN LATERAL/);
   assert.doesNotMatch(groupsSql, /ORDER BY event_count DESC/);
   await app.close();
@@ -754,6 +755,58 @@ test("grouped logs use hourly summaries and raw partial-hour edges", async () =>
   assert.equal(aligned.statusCode, 200);
   assert.match(groupsSql, /FROM occurrence_rollups_hourly r/);
   assert.doesNotMatch(groupsSql, /FROM occurrences o/);
+  await app.close();
+});
+
+test("error message variants preserve and aggregate original IDs", async () => {
+  let variantsSql = "";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("WITH variants AS")) {
+        variantsSql = sql;
+        return {
+          rows: [{
+            message: "Failed to play animation: asset/?id=10921269718",
+            event_count: 14,
+            first_seen_at: "2026-07-20T10:00:00.000Z",
+            last_seen_at: "2026-07-20T11:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors/${"a".repeat(64)}/variants`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(variantsSql, /COALESCE\(o\.original_message, eg\.normalized_message\)/);
+  assert.match(variantsSql, /SUM\(o\.repeat_count\)::int/);
+  assert.deepEqual(response.json().data, [{
+    message: "Failed to play animation: asset/?id=10921269718",
+    count: 14,
+    firstSeenAt: "2026-07-20T10:00:00.000Z",
+    lastSeenAt: "2026-07-20T11:00:00.000Z",
+  }]);
   await app.close();
 });
 

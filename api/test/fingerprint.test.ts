@@ -157,6 +157,55 @@ test("known Roblox service user IDs normalize without a session hint", () => {
   assert.match(first.normalizedMessage, /User <PLAYER_ID>/);
 });
 
+test("long numeric IDs do not create distinct animation error groups", () => {
+  const firstBatch = makeBatch("Skyfloans");
+  const secondBatch = makeBatch("Skyfloans");
+  firstBatch.events[0]!.message =
+    "Failed to play animation: http://www.roblox.com/asset/?id=10921269718. AnimationTrack limit of 64 tracks exceeded for 'Skyfloans', new animations will not be played.";
+  secondBatch.events[0]!.message =
+    "Failed to play animation: http://www.roblox.com/asset/?id=507767968. AnimationTrack limit of 64 tracks exceeded for 'Skyfloans', new animations will not be played.";
+
+  const first = fingerprintEvent(firstBatch.events[0]!, firstBatch);
+  const second = fingerprintEvent(secondBatch.events[0]!, secondBatch);
+
+  assert.notEqual(first.fingerprint, second.fingerprint);
+  assert.equal(first.displayFingerprint, second.displayFingerprint);
+  assert.match(first.displayMessage, /id=<ID>/);
+  assert.match(first.displayMessage, /64 tracks/);
+});
+
+test("long numeric IDs normalize across product types and datastore keys", () => {
+  const cases = [
+    [
+      "[MonetizationClient] Price lookup failed for 1906945725: MarketplaceService::getProductInfo - GetGamePassInfo failed: HTTP request failed: Timedout",
+      "[MonetizationClient] Price lookup failed for <ID>: MarketplaceService::getProductInfo - GetGamePassInfo failed: HTTP request failed: Timedout",
+    ],
+    [
+      "DataStore request was added to queue. Key = UT_FRESH_V1_PLAYER_1920472371",
+      "DataStore request was added to queue. Key = UT_FRESH_V1_PLAYER_<ID>",
+    ],
+  ] as const;
+
+  for (const [message, expected] of cases) {
+    const batch = makeBatch("Skyfloans");
+    batch.events[0]!.message = message;
+    assert.equal(fingerprintEvent(batch.events[0]!, batch).displayMessage, expected);
+  }
+});
+
+test("ordinary numeric details remain part of the fingerprint", () => {
+  const firstBatch = makeBatch("Skyfloans");
+  const secondBatch = makeBatch("Skyfloans");
+  firstBatch.events[0]!.message = "AnimationTrack limit of 64 tracks exceeded";
+  secondBatch.events[0]!.message = "AnimationTrack limit of 32 tracks exceeded";
+
+  const first = fingerprintEvent(firstBatch.events[0]!, firstBatch);
+  const second = fingerprintEvent(secondBatch.events[0]!, secondBatch);
+
+  assert.notEqual(first.fingerprint, second.fingerprint);
+  assert.notEqual(first.displayFingerprint, second.displayFingerprint);
+});
+
 test("stack differences do not split an otherwise identical error group", () => {
   const firstBatch = makeBatch("Skyfloans");
   const secondBatch = makeBatch("Skyfloans");

@@ -307,6 +307,9 @@ async function insertEvents(
       sourceScript: string | null;
       normalizedMessage: string;
       normalizedStack: string | null;
+      displayFingerprint: string;
+      displayMessage: string;
+      displaySourceScript: string | null;
       firstSeenAt: string;
       lastSeenAt: string;
     }
@@ -331,6 +334,9 @@ async function insertEvents(
       sourceScript: normalized.normalizedSourceScript,
       normalizedMessage: normalized.normalizedMessage,
       normalizedStack: normalized.normalizedStack,
+      displayFingerprint: normalized.displayFingerprint,
+      displayMessage: normalized.displayMessage,
+      displaySourceScript: normalized.displaySourceScript,
       firstSeenAt: event.occurredAt,
       lastSeenAt,
     });
@@ -347,6 +353,9 @@ async function insertEvents(
       source_script: group.sourceScript,
       normalized_message: group.normalizedMessage,
       normalized_stack: group.normalizedStack,
+      display_fingerprint: group.displayFingerprint,
+      display_message: group.displayMessage,
+      display_source_script: group.displaySourceScript,
       first_seen_at: group.firstSeenAt,
       last_seen_at: group.lastSeenAt,
     })),
@@ -372,17 +381,22 @@ async function insertEvents(
        FROM jsonb_to_recordset($2::jsonb) AS item(
          fingerprint text, source text, level text, source_script text,
          normalized_message text, normalized_stack text,
+         display_fingerprint text, display_message text,
+         display_source_script text,
          first_seen_at timestamptz, last_seen_at timestamptz
        )
      ), upserted AS (
      INSERT INTO error_groups (
        project_id, fingerprint, source, level, source_script,
-       normalized_message, normalized_stack,
+       normalized_message, normalized_stack, display_fingerprint,
+       display_message, display_source_script,
        first_seen_at, last_seen_at, occurrence_count
      )
      SELECT
        $1, input.fingerprint, input.source::log_source, input.level::log_level,
        input.source_script, input.normalized_message, input.normalized_stack,
+       input.display_fingerprint, input.display_message,
+       input.display_source_script,
        input.first_seen_at, input.last_seen_at, 0
      FROM input
      ORDER BY input.fingerprint

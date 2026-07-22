@@ -1505,6 +1505,33 @@ kbd {
 .occurrence-list code { color: #9db8c8; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
 .occurrence-list strong { color: var(--ink); font-size: 12px; }
 
+.message-variants .section-heading code {
+  color: #f0bd77;
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.variant-list {
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: #101922;
+}
+
+.variant-list article {
+  min-height: 58px;
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr) 180px;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.variant-list article:last-child { border-bottom: 0; }
+.variant-list strong { color: var(--ink); font-size: 12px; }
+.variant-list code { color: #b9ccd7; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+.variant-list time { color: #82939f; font-size: 11px; text-align: right; }
+
 .simple-session-row {
   display: flex !important;
   align-items: center;
@@ -2006,6 +2033,8 @@ kbd {
   .detail-stats div { min-width: 50%; }
   .occurrence-list-header,
   .occurrence-list > button { grid-template-columns: 150px 88px minmax(150px, 1fr); }
+  .variant-list article { grid-template-columns: 56px minmax(0, 1fr); }
+  .variant-list time { grid-column: 2; text-align: left; }
   .occurrence-list-header > :nth-child(3),
   .occurrence-list-header > :nth-child(5),
   .occurrence-list > button > :nth-child(3),
@@ -2106,6 +2135,8 @@ kbd {
   .occurrence-list-header { display: none; }
   .occurrence-list > button { grid-template-columns: 126px minmax(0, 1fr); padding-block: 10px; }
   .occurrence-list > button > :nth-child(4) { display: none; }
+  .variant-list article { grid-template-columns: 44px minmax(0, 1fr); align-items: start; gap: 6px 10px; padding: 12px; }
+  .variant-list time { grid-column: 2; }
   .log-lines > button {
     min-width: 0;
     grid-template-columns: 32px 82px 48px;
