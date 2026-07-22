@@ -691,9 +691,9 @@ test("grouped logs bound candidate groups before calculating exact statistics", 
   assert.equal(response.statusCode, 200);
   assert.match(groupsSql, /FROM error_groups eg/);
   assert.match(groupsSql, /eg\.last_seen_at >= \$\d+/);
-  assert.match(groupsSql, /GROUP BY\s+eg\.display_fingerprint/);
-  assert.match(groupsSql, /ORDER BY cursor_last_seen_at DESC, eg\.display_fingerprint DESC\s+LIMIT \$\d+/);
-  assert.match(groupsSql, /occurrence_group\.display_fingerprint = candidate_groups\.group_id/);
+  assert.match(groupsSql, /GROUP BY\s+COALESCE\(eg\.display_fingerprint, eg\.fingerprint\)/);
+  assert.match(groupsSql, /ORDER BY cursor_last_seen_at DESC, COALESCE\(eg\.display_fingerprint, eg\.fingerprint\) DESC\s+LIMIT \$\d+/);
+  assert.match(groupsSql, /COALESCE\(occurrence_group\.display_fingerprint, occurrence_group\.fingerprint\) = candidate_groups\.group_id/);
   assert.match(groupsSql, /JOIN LATERAL/);
   assert.doesNotMatch(groupsSql, /ORDER BY event_count DESC/);
   await app.close();
