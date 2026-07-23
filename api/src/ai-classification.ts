@@ -237,7 +237,7 @@ async function claimJobs(
          FROM ai_classification_jobs
          WHERE (
            target_type = 'feedback'
-           OR priority > 0
+           OR priority >= 10
          )
            AND (
            (

@@ -245,7 +245,7 @@ test("AI error classifications are cached once per normalized fingerprint", asyn
   assert.match(reconciliation, /groups\.last_seen_at >= now\(\) - interval '3 days'/);
   assert.match(worker, /JOIN ai_error_classifications cached/);
   assert.match(worker, /groups\.fingerprint = fingerprints\.fingerprint/);
-  assert.match(worker, /target_type = 'feedback'[\s\S]+OR priority > 0/);
+  assert.match(worker, /target_type = 'feedback'[\s\S]+OR priority >= 10/);
 });
 
 test("INDEX datastore groups are remapped across every fast read model", async () => {
