@@ -627,7 +627,7 @@ async function insertEvents(
      ), display_live_rollups AS (
        INSERT INTO display_error_rollups_hourly (
          project_id, display_group_id, bucket_at, event_count,
-         first_seen_at, last_seen_at
+         first_seen_at, last_seen_at, level, source
        )
        SELECT
          $1,
@@ -638,12 +638,20 @@ async function insertEvents(
          ) AT TIME ZONE 'UTC',
          SUM(inserted.repeat_count)::bigint,
          MIN(inserted.occurred_at),
-         MAX(COALESCE(inserted.last_occurred_at, inserted.occurred_at))
+         MAX(COALESCE(inserted.last_occurred_at, inserted.occurred_at)),
+         display_rollup_group.level,
+         display_rollup_group.source
        FROM inserted
        JOIN input
          ON input.id = inserted.id
         AND input.occurred_at = inserted.occurred_at
-       GROUP BY input.display_group_id, 3
+       JOIN display_error_groups display_rollup_group
+         ON display_rollup_group.id = input.display_group_id
+       GROUP BY
+         input.display_group_id,
+         display_rollup_group.level,
+         display_rollup_group.source,
+         3
        ON CONFLICT (project_id, display_group_id, bucket_at) DO UPDATE
        SET event_count = display_error_rollups_hourly.event_count + EXCLUDED.event_count,
            first_seen_at = LEAST(
@@ -653,7 +661,9 @@ async function insertEvents(
            last_seen_at = GREATEST(
              display_error_rollups_hourly.last_seen_at,
              EXCLUDED.last_seen_at
-           )
+           ),
+           level = EXCLUDED.level,
+           source = EXCLUDED.source
        RETURNING display_group_id
      ),
      updated AS (

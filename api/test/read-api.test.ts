@@ -100,6 +100,7 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
   );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM live_rollups/);
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_live_rollups/);
+  assert.match(occurrenceSql, /first_seen_at, last_seen_at, level, source/);
   assert.match(
     lockSql,
     /event\.display_fingerprint/,
@@ -793,6 +794,9 @@ test("current grouped logs use the indexed display read model", async () => {
       if (sql.includes("display_error_read_model_v1")) {
         return { rows: [{ ready: true }], rowCount: 1 };
       }
+      if (sql.includes("display_error_rollup_filters_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
       if (sql.includes("display_error_rollups_hourly")) {
         queries.push(sql);
         return {
@@ -857,15 +861,16 @@ test("current grouped logs use the indexed display read model", async () => {
   assert.match(queries[1]!, /GROUP BY r\.display_group_id/);
   assert.match(
     queries[1]!,
-    /ORDER BY event_count DESC, last_seen_at DESC, group_id DESC/,
+    /ORDER BY event_count DESC,[\s\S]+last_seen_at DESC,[\s\S]+display_group_id::text DESC/,
   );
+  assert.match(queries[1]!, /r\.level = ANY/);
   assert.match(
     queries[2]!,
     /\(deg\.last_seen_at, deg\.fingerprint\) < \(/,
   );
   assert.match(
     queries[3]!,
-    /\(event_count, last_seen_at, group_id\) < \(/,
+    /\(event_count, last_seen_at, display_group_id::text\) < \(/,
   );
   await app.close();
 });

@@ -15,6 +15,7 @@ import {
 import { mapOccurrence, occurrenceSelect } from "./mappers.js";
 import { QueryParameters } from "./query.js";
 import {
+  displayErrorRollupFiltersReady,
   displayErrorReadModelReady,
   liveErrorGroupRollupsReady,
 } from "./rollups.js";
@@ -154,6 +155,9 @@ export async function registerProjectAndErrorRoutes(
         .enum(["count", "recent"])
         .parse(typeof query.sort === "string" ? query.sort : "count");
       const displayReadModelReady = await displayErrorReadModelReady(pool);
+      const displayRollupFiltersReady = displayReadModelReady
+        ? await displayErrorRollupFiltersReady(pool)
+        : false;
       const rollupsReady = displayReadModelReady
         ? true
         : await liveErrorGroupRollupsReady(pool);
@@ -255,13 +259,50 @@ export async function registerProjectAndErrorRoutes(
         } else {
           let cursorCondition = "";
           if (cursorValues) {
-            cursorCondition = `WHERE (event_count, last_seen_at, group_id) < (
+            cursorCondition = `WHERE (event_count, last_seen_at, ${displayRollupFiltersReady ? "display_group_id::text" : "group_id"}) < (
               ${parameters.add(cursorValues[0])},
               ${parameters.add(cursorValues[1])},
               ${parameters.add(cursorValues[2])}
             )`;
           }
-          sql = `WITH stats AS (
+          sql = displayRollupFiltersReady ? `WITH stats AS (
+            SELECT
+              r.display_group_id,
+              SUM(r.event_count)::int AS event_count,
+              MIN(r.first_seen_at) AS first_seen_at,
+              MAX(r.last_seen_at) AS last_seen_at
+            FROM display_error_rollups_hourly r
+            WHERE r.project_id = ${project}
+              AND r.bucket_at >= ${from}
+              AND r.bucket_at < ${to}
+              AND r.level = ANY(${severity}::log_level[])
+              ${side ? `AND r.source = ANY(${side}::log_source[])` : ""}
+            GROUP BY r.display_group_id
+          ), paged AS (
+            SELECT *
+            FROM stats
+            ${cursorCondition}
+            ORDER BY event_count DESC,
+                     last_seen_at DESC,
+                     display_group_id::text DESC
+            LIMIT ${rowLimit}
+          )
+          SELECT
+            deg.fingerprint AS group_id,
+            deg.fingerprint,
+            deg.level,
+            deg.source,
+            deg.normalized_message,
+            deg.source_script,
+            paged.event_count,
+            paged.first_seen_at,
+            paged.last_seen_at,
+            paged.display_group_id::text AS cursor_group_id
+          FROM paged
+          JOIN display_error_groups deg ON deg.id = paged.display_group_id
+          ORDER BY paged.event_count DESC,
+                   paged.last_seen_at DESC,
+                   paged.display_group_id::text DESC` : `WITH stats AS (
             SELECT
               r.display_group_id,
               SUM(r.event_count)::int AS event_count,
@@ -488,7 +529,7 @@ export async function registerProjectAndErrorRoutes(
             ? encodeCursor([
                 Number(last.event_count),
                 iso(last.cursor_last_seen_at ?? last.last_seen_at),
-                last.group_id,
+                last.cursor_group_id ?? last.group_id,
               ])
             : null,
       };
@@ -765,6 +806,9 @@ export async function registerProjectAndErrorRoutes(
       }
 
       const displayReadModelReady = await displayErrorReadModelReady(pool);
+      const displayRollupFiltersReady = displayReadModelReady
+        ? await displayErrorRollupFiltersReady(pool)
+        : false;
       const rollupsReady = displayReadModelReady
         ? true
         : await liveErrorGroupRollupsReady(pool);
@@ -817,7 +861,26 @@ export async function registerProjectAndErrorRoutes(
           if (side) {
             rollupConditions.push(`eg.source = ANY(${side}::log_source[])`);
           }
-          segments.push(displayReadModelReady ? `SELECT
+          const displayFilterConditions = [
+            `r.project_id = ${project}`,
+            `r.bucket_at + interval '1 hour' > ${from}`,
+            `r.bucket_at < ${to}`,
+            `r.bucket_at >= ${completeFrom}`,
+            `r.bucket_at < ${completeTo}`,
+            `r.level = ANY(${severity}::log_level[])`,
+          ];
+          if (side) {
+            displayFilterConditions.push(
+              `r.source = ANY(${side}::log_source[])`,
+            );
+          }
+          segments.push(displayRollupFiltersReady ? `SELECT
+            date_trunc('${bucket}', r.bucket_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
+            COALESCE(SUM(r.event_count) FILTER (WHERE r.source = 'client'), 0)::bigint AS client_count,
+            COALESCE(SUM(r.event_count) FILTER (WHERE r.source = 'server'), 0)::bigint AS server_count
+          FROM display_error_rollups_hourly r
+          WHERE ${displayFilterConditions.join(" AND ")}
+          GROUP BY bucket_at` : displayReadModelReady ? `SELECT
             date_trunc('${bucket}', r.bucket_at AT TIME ZONE 'UTC') AT TIME ZONE 'UTC' AS bucket_at,
             COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'client'), 0)::bigint AS client_count,
             COALESCE(SUM(r.event_count) FILTER (WHERE eg.source = 'server'), 0)::bigint AS server_count
