@@ -1,6 +1,6 @@
 import pg from "pg";
 
-const hoursPerBatch = Number(process.env.DISPLAY_IMPACT_BACKFILL_HOURS ?? 1);
+const hoursPerBatch = Number(process.env.DISPLAY_IMPACT_BATCH_HOURS ?? 1);
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 

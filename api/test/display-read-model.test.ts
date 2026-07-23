@@ -123,7 +123,7 @@ test("display error impacts preserve exact data and bound distinct-count work", 
   assert.match(migration, /purge_expired_display_error_impacts/);
   assert.doesNotMatch(migration, /DELETE FROM occurrences|UPDATE occurrences/);
 
-  assert.match(script, /DISPLAY_IMPACT_BACKFILL_HOURS/);
+  assert.match(script, /DISPLAY_IMPACT_BATCH_HOURS/);
   assert.match(script, /ON CONFLICT \(project_id, display_group_id, player_id\)/);
   assert.match(script, /ON CONFLICT \(project_id, display_group_id, job_id\)/);
   assert.match(script, /missing_players/);
