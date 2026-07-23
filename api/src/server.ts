@@ -48,6 +48,10 @@ async function runMaintenance(): Promise<void> {
     await client.query(
       "SELECT purge_expired_display_error_impacts(INTERVAL '3 days')",
     );
+    await client.query(
+      `DELETE FROM display_error_variants_hourly
+       WHERE bucket_at < now() - INTERVAL '3 days'`,
+    );
   });
 }
 

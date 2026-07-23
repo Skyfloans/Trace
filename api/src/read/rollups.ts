@@ -20,6 +20,10 @@ const occurrenceDisplayReadinessCache = new WeakMap<
   Pool,
   { ready: boolean; expiresAt: number }
 >();
+const displayVariantReadinessCache = new WeakMap<
+  Pool,
+  { ready: boolean; expiresAt: number }
+>();
 
 const readinessTtlMs = 15_000;
 
@@ -132,6 +136,26 @@ export async function occurrenceDisplayGroupIndexReady(
   );
   const ready = marker.rows[0]?.ready === true;
   occurrenceDisplayReadinessCache.set(pool, {
+    ready,
+    expiresAt: now + readinessTtlMs,
+  });
+  return ready;
+}
+
+export async function displayErrorVariantsReady(pool: Pool): Promise<boolean> {
+  const now = Date.now();
+  const cached = displayVariantReadinessCache.get(pool);
+  if (cached && cached.expiresAt > now) return cached.ready;
+
+  const marker = await pool.query<{ ready: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM trace_read_model_state
+       WHERE key = 'display_error_variants_v1'
+     ) AS ready`,
+  );
+  const ready = marker.rows[0]?.ready === true;
+  displayVariantReadinessCache.set(pool, {
     ready,
     expiresAt: now + readinessTtlMs,
   });

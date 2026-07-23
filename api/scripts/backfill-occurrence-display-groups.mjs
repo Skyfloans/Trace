@@ -1,5 +1,8 @@
 import pg from "pg";
 
+const batchHours = Number(
+  process.env.OCCURRENCE_DISPLAY_BATCH_HOURS ?? 1,
+);
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 
@@ -26,6 +29,7 @@ try {
     const index = `${partition}_project_display_group_time_idx`;
     const bounds = await client.query(`
       SELECT
+        COUNT(*)::bigint AS retained_rows,
         GREATEST(
           date_trunc('hour', COALESCE(MIN(occurred_at), now())),
           date_trunc('hour', now() - interval '3 days')
@@ -37,12 +41,34 @@ try {
       FROM ${partition}
       WHERE occurred_at >= now() - interval '3 days'
     `);
+    const partitionDate = new Date(
+      `${partition.slice("occurrences_".length).replaceAll("_", "-")}T00:00:00.000Z`,
+    );
+    const oldestRetainedDate = new Date();
+    oldestRetainedDate.setUTCDate(oldestRetainedDate.getUTCDate() - 3);
+    oldestRetainedDate.setUTCHours(0, 0, 0, 0);
+    if (
+      String(bounds.rows[0].retained_rows) === "0"
+      && partitionDate < oldestRetainedDate
+    ) {
+      const indexState = await client.query(`
+        SELECT pg_index.indisvalid AS valid
+        FROM pg_index
+        JOIN pg_class ON pg_class.oid = pg_index.indexrelid
+        WHERE pg_class.relname = $1
+      `, [index]);
+      if (indexState.rows[0]?.valid === false) {
+        await client.query(`DROP INDEX CONCURRENTLY IF EXISTS ${index}`);
+      }
+      console.log(JSON.stringify({ partition, skipped: "outside_retention" }));
+      continue;
+    }
     let cursor = new Date(bounds.rows[0].first_bucket);
     const finishedAt = new Date(bounds.rows[0].finished_at);
 
     while (cursor < finishedAt) {
       const next = new Date(Math.min(
-        cursor.getTime() + 60 * 60 * 1_000,
+        cursor.getTime() + batchHours * 60 * 60 * 1_000,
         finishedAt.getTime(),
       ));
       const updated = await client.query(`

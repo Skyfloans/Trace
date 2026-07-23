@@ -576,7 +576,8 @@ async function insertEvents(
        FROM input
        ON CONFLICT (id, occurred_at) DO NOTHING
        RETURNING
-         id, group_id, session_id, occurred_at, last_occurred_at, repeat_count
+         id, group_id, display_group_id, session_id, occurred_at,
+         last_occurred_at, repeat_count, original_message
      ),
      totals AS (
        SELECT
@@ -665,6 +666,44 @@ async function insertEvents(
            level = EXCLUDED.level,
            source = EXCLUDED.source
        RETURNING display_group_id
+     ), display_variants AS (
+       INSERT INTO display_error_variants_hourly (
+         project_id, display_group_id, bucket_at, message_hash, message,
+         event_count, first_seen_at, last_seen_at
+       )
+       SELECT
+         $1,
+         inserted.display_group_id,
+         date_trunc(
+           'hour',
+           inserted.occurred_at AT TIME ZONE 'UTC'
+         ) AT TIME ZONE 'UTC',
+         digest(
+           COALESCE(inserted.original_message, groups.normalized_message),
+           'sha256'
+         ),
+         COALESCE(inserted.original_message, groups.normalized_message),
+         SUM(inserted.repeat_count)::bigint,
+         MIN(inserted.occurred_at),
+         MAX(COALESCE(inserted.last_occurred_at, inserted.occurred_at))
+       FROM inserted
+       JOIN error_groups groups ON groups.id = inserted.group_id
+       GROUP BY inserted.display_group_id, 3, 4, 5
+       ON CONFLICT (
+         project_id, display_group_id, bucket_at, message_hash
+       ) DO UPDATE
+       SET event_count =
+             display_error_variants_hourly.event_count + EXCLUDED.event_count,
+           message = EXCLUDED.message,
+           first_seen_at = LEAST(
+             display_error_variants_hourly.first_seen_at,
+             EXCLUDED.first_seen_at
+           ),
+           last_seen_at = GREATEST(
+             display_error_variants_hourly.last_seen_at,
+             EXCLUDED.last_seen_at
+           )
+       RETURNING display_group_id
      ), display_players AS (
        INSERT INTO display_error_group_players (
          project_id, display_group_id, player_id, last_seen_at
@@ -722,6 +761,7 @@ async function insertEvents(
        (SELECT COUNT(*) FROM updated) AS updated_group_count,
        (SELECT COUNT(*) FROM live_rollups) AS updated_rollup_count,
        (SELECT COUNT(*) FROM display_live_rollups) AS updated_display_rollup_count,
+       (SELECT COUNT(*) FROM display_variants) AS updated_display_variant_count,
        (SELECT COUNT(*) FROM display_players) AS updated_display_player_count,
        (SELECT COUNT(*) FROM display_jobs) AS updated_display_job_count
      FROM inserted`,

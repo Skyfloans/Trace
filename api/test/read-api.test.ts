@@ -96,6 +96,11 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
   );
   assert.match(
     occurrenceSql,
+    /display_variants AS \(\s+INSERT INTO display_error_variants_hourly/,
+  );
+  assert.match(occurrenceSql, /digest\([\s\S]+sha256/);
+  assert.match(
+    occurrenceSql,
     /event_count = occurrence_rollups_hourly\.event_count \+ EXCLUDED\.event_count/,
   );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM live_rollups/);
@@ -114,6 +119,7 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
   );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_players/);
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_jobs/);
+  assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_variants/);
   assert.match(occurrenceSql, /first_seen_at, last_seen_at, level, source/);
   assert.match(
     lockSql,
@@ -1143,7 +1149,10 @@ test("error drill-downs use the verified occurrence display index", async () => 
       if (sql.includes("occurrence_display_group_index_v1")) {
         return { rows: [{ ready: true }], rowCount: 1 };
       }
-      if (sql.includes("WITH variants AS")) {
+      if (sql.includes("display_error_variants_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("variant_parts AS")) {
         variantsSql = sql;
         return { rows: [], rowCount: 0 };
       }
@@ -1171,7 +1180,8 @@ test("error drill-downs use the verified occurrence display index", async () => 
   })).statusCode, 200);
 
   assert.match(occurrencesSql, /display_group\.id = o\.display_group_id/);
-  assert.match(variantsSql, /display_group\.id = o\.display_group_id/);
+  assert.match(variantsSql, /JOIN display_error_variants_hourly rollups/);
+  assert.match(variantsSql, /o\.display_group_id = requested_group\.id/);
   assert.doesNotMatch(occurrencesSql, /display_error_group_members/);
   assert.doesNotMatch(variantsSql, /display_error_group_members/);
   await app.close();

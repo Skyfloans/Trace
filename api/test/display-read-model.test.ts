@@ -151,10 +151,36 @@ test("occurrence display index is built online and verified before reads", async
   assert.match(migration, /ON ONLY occurrences/);
   assert.doesNotMatch(migration, /DROP TABLE|DELETE FROM occurrences/);
   assert.match(script, /CREATE INDEX CONCURRENTLY IF NOT EXISTS/);
+  assert.match(script, /OCCURRENCE_DISPLAY_BATCH_HOURS/);
+  assert.match(script, /skipped: "outside_retention"/);
+  assert.match(script, /DROP INDEX CONCURRENTLY IF EXISTS/);
   assert.match(script, /ATTACH PARTITION/);
   assert.match(script, /Occurrence display-group verification failed/);
   assert.ok(
     script.indexOf("Occurrence display-group verification failed")
       < script.indexOf("occurrence_display_group_index_v1"),
+  );
+});
+
+test("display variants are retained hourly and verified before fast reads", async () => {
+  const migration = await readFile(
+    new URL("../../database/migrations/018_display_error_variants.sql", import.meta.url),
+    "utf8",
+  );
+  const script = await readFile(
+    new URL("../scripts/backfill-display-error-variants.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS display_error_variants_hourly/);
+  assert.match(migration, /message_hash BYTEA NOT NULL/);
+  assert.match(migration, /PRIMARY KEY \(project_id, display_group_id, bucket_at, message_hash\)/);
+  assert.match(script, /DISPLAY_VARIANT_BATCH_HOURS/);
+  assert.match(script, /digest\([\s\S]+sha256/);
+  assert.match(script, /GREATEST\([\s\S]+EXCLUDED\.event_count/);
+  assert.match(script, /Display variant verification failed/);
+  assert.ok(
+    script.indexOf("Display variant verification failed")
+      < script.indexOf("display_error_variants_v1"),
   );
 });

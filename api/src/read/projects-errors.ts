@@ -18,6 +18,7 @@ import {
   displayErrorImpactsReady,
   displayErrorRollupFiltersReady,
   displayErrorReadModelReady,
+  displayErrorVariantsReady,
   liveErrorGroupRollupsReady,
   occurrenceDisplayGroupIndexReady,
 } from "./rollups.js";
@@ -801,6 +802,9 @@ export async function registerProjectAndErrorRoutes(
       const occurrenceDisplayReady = displayReadModelReady
         ? await occurrenceDisplayGroupIndexReady(pool)
         : false;
+      const displayVariantsReady = occurrenceDisplayReady
+        ? await displayErrorVariantsReady(pool)
+        : false;
       const query = request.query as Record<string, unknown>;
       const time = parseTimeRange(
         typeof query.from === "string" ? query.from : undefined,
@@ -812,6 +816,9 @@ export async function registerProjectAndErrorRoutes(
       const groupFingerprint = parameters.add(fingerprint);
       const from = parameters.add(time.from);
       const to = parameters.add(time.to);
+      const hours = completeHourRange(time);
+      const completeFrom = parameters.add(hours.from);
+      const completeTo = parameters.add(hours.to);
       let cursorCondition = "";
 
       if (typeof query.cursor === "string") {
@@ -829,7 +836,62 @@ export async function registerProjectAndErrorRoutes(
       }
 
       const result = await pool.query(
-        `${displayReadModelReady && !occurrenceDisplayReady
+        `${displayVariantsReady
+          ? `WITH requested_group AS MATERIALIZED (
+               SELECT id
+               FROM display_error_groups
+               WHERE project_id = ${project}
+                 AND fingerprint = ${groupFingerprint}
+             ),
+             variant_parts AS (
+               ${hours.hasCompleteHours ? `SELECT
+                 rollups.message_hash,
+                 rollups.message,
+                 rollups.event_count,
+                 rollups.first_seen_at,
+                 rollups.last_seen_at
+               FROM requested_group
+               JOIN display_error_variants_hourly rollups
+                 ON rollups.project_id = ${project}
+                AND rollups.display_group_id = requested_group.id
+                AND rollups.bucket_at >= ${completeFrom}
+                AND rollups.bucket_at < ${completeTo}` : ""}
+               ${hours.hasCompleteHours && hours.hasRawEdges ? "UNION ALL" : ""}
+               ${hours.hasRawEdges ? `SELECT
+                 digest(
+                   COALESCE(o.original_message, eg.normalized_message),
+                   'sha256'
+                 ),
+                 COALESCE(o.original_message, eg.normalized_message),
+                 SUM(o.repeat_count)::bigint,
+                 MIN(o.occurred_at),
+                 MAX(COALESCE(o.last_occurred_at, o.occurred_at))
+               FROM requested_group
+               JOIN occurrences o
+                 ON o.project_id = ${project}
+                AND o.display_group_id = requested_group.id
+                AND o.occurred_at >= ${from}
+                AND o.occurred_at < ${to}
+                AND NOT (
+                  o.occurred_at >= ${completeFrom}
+                  AND o.occurred_at < ${completeTo}
+                )
+               JOIN error_groups eg ON eg.id = o.group_id
+               GROUP BY COALESCE(
+                 o.original_message,
+                 eg.normalized_message
+               ), 1` : ""}
+             ),
+             variants AS (
+               SELECT
+                 MAX(message) AS message,
+                 SUM(event_count)::bigint AS event_count,
+                 MIN(first_seen_at) AS first_seen_at,
+                 MAX(last_seen_at) AS last_seen_at
+               FROM variant_parts
+               GROUP BY message_hash
+             )`
+          : displayReadModelReady && !occurrenceDisplayReady
           ? `WITH display_groups_for_request AS MATERIALIZED (
                SELECT members.exact_group_id, groups.fingerprint
                FROM display_error_groups groups
@@ -840,6 +902,7 @@ export async function registerProjectAndErrorRoutes(
              ),
              variants AS (`
           : "WITH variants AS ("}
+           ${displayVariantsReady ? "" : `
            SELECT
              COALESCE(o.original_message, eg.normalized_message) AS message,
              SUM(o.repeat_count)::int AS event_count,
@@ -858,7 +921,7 @@ export async function registerProjectAndErrorRoutes(
              AND o.occurred_at >= ${from}
              AND o.occurred_at < ${to}
            GROUP BY COALESCE(o.original_message, eg.normalized_message)
-         )
+         )`}
          SELECT *
          FROM variants
          ${cursorCondition}
