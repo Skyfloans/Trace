@@ -47,6 +47,20 @@ test("OpenRouter classification uses the Roblox Luau rubric and strict output", 
     (requestBody?.response_format as { type: string }).type,
     "json_schema",
   );
+  const responseFormat = requestBody?.response_format as {
+    json_schema: {
+      schema: { properties: { results: { minItems: number; maxItems: number } } };
+    };
+  };
+  assert.equal(
+    responseFormat.json_schema.schema.properties.results.minItems,
+    1,
+  );
+  assert.equal(
+    responseFormat.json_schema.schema.properties.results.maxItems,
+    1,
+  );
+  assert.match(messages[1]?.content ?? "", /one for every key/);
 });
 
 test("feedback classification only permits product-signal categories", async () => {

@@ -102,7 +102,7 @@ Choose exactly one category:
 When a message both reports breakage and suggests a fix, prefer bug_report. Return a reason of at most 12 words without exposing chain-of-thought.`;
 }
 
-function responseFormat(target: ClassificationTarget) {
+function responseFormat(target: ClassificationTarget, itemCount: number) {
   return {
     type: "json_schema",
     json_schema: {
@@ -113,6 +113,8 @@ function responseFormat(target: ClassificationTarget) {
         properties: {
           results: {
             type: "array",
+            minItems: itemCount,
+            maxItems: itemCount,
             items: {
               type: "object",
               properties: {
@@ -163,16 +165,20 @@ export async function classifyWithOpenRouter(
           { role: "system", content: systemPrompt(target) },
           {
             role: "user",
-            content: JSON.stringify({
-              items: inputs.map(({ message, severity, side, source }, key) => ({
-                key,
-                message,
-                ...(target === "error" ? { severity, side, source } : {}),
-              })),
-            }),
+            content: [
+              `Return exactly ${inputs.length} results: one for every key from 0`,
+              `through ${inputs.length - 1}, in the same order.`,
+              JSON.stringify({
+                items: inputs.map(({ message, severity, side, source }, key) => ({
+                  key,
+                  message,
+                  ...(target === "error" ? { severity, side, source } : {}),
+                })),
+              }),
+            ].join("\n"),
           },
         ],
-        response_format: responseFormat(target),
+        response_format: responseFormat(target, inputs.length),
         reasoning: { effort: "minimal", exclude: true },
         temperature: 0,
         max_completion_tokens: Math.max(350, inputs.length * 90),
