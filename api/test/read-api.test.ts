@@ -108,6 +108,10 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
     occurrenceSql,
     /display_jobs AS \(\s+INSERT INTO display_error_group_jobs/,
   );
+  assert.match(
+    occurrenceSql,
+    /id, project_id, group_id, display_group_id, job_id, session_id/,
+  );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_players/);
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_jobs/);
   assert.match(occurrenceSql, /first_seen_at, last_seen_at, level, source/);
@@ -1113,6 +1117,63 @@ test("error message variants preserve and aggregate original IDs", async () => {
     firstSeenAt: "2026-07-20T10:00:00.000Z",
     lastSeenAt: "2026-07-20T11:00:00.000Z",
   }]);
+  await app.close();
+});
+
+test("error drill-downs use the verified occurrence display index", async () => {
+  let occurrencesSql = "";
+  let variantsSql = "";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{ id: "10000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
+      }
+      if (sql.includes("display_error_read_model_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("occurrence_display_group_index_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("WITH variants AS")) {
+        variantsSql = sql;
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("SELECT") && sql.includes("FROM occurrences o")) {
+        occurrencesSql = sql;
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const prefix =
+    `/v1/projects/20000000-0000-4000-8000-000000000001/errors/${"a".repeat(64)}`;
+  const headers = { authorization: `Bearer ${"x".repeat(40)}` };
+
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `${prefix}/occurrences`,
+    headers,
+  })).statusCode, 200);
+  assert.equal((await app.inject({
+    method: "GET",
+    url: `${prefix}/variants`,
+    headers,
+  })).statusCode, 200);
+
+  assert.match(occurrencesSql, /display_group\.id = o\.display_group_id/);
+  assert.match(variantsSql, /display_group\.id = o\.display_group_id/);
+  assert.doesNotMatch(occurrencesSql, /display_error_group_members/);
+  assert.doesNotMatch(variantsSql, /display_error_group_members/);
   await app.close();
 });
 

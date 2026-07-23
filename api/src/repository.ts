@@ -565,12 +565,12 @@ async function insertEvents(
      ),
      inserted AS (
        INSERT INTO occurrences (
-         id, project_id, group_id, job_id, session_id,
+         id, project_id, group_id, display_group_id, job_id, session_id,
          occurred_at, last_occurred_at, repeat_count,
          original_message, original_stack, context
        )
        SELECT
-         id, $1, group_id, $2, session_id,
+         id, $1, group_id, display_group_id, $2, session_id,
          occurred_at, last_occurred_at, repeat_count,
          original_message, original_stack, context
        FROM input

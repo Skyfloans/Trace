@@ -19,6 +19,7 @@ import {
   displayErrorRollupFiltersReady,
   displayErrorReadModelReady,
   liveErrorGroupRollupsReady,
+  occurrenceDisplayGroupIndexReady,
 } from "./rollups.js";
 import {
   requireProjectMembership,
@@ -708,6 +709,9 @@ export async function registerProjectAndErrorRoutes(
       );
       await requireProjectMembership(pool, request, projectId);
       const displayReadModelReady = await displayErrorReadModelReady(pool);
+      const occurrenceDisplayReady = displayReadModelReady
+        ? await occurrenceDisplayGroupIndexReady(pool)
+        : false;
       const query = request.query as Record<string, unknown>;
       const time = parseTimeRange(
         typeof query.from === "string" ? query.from : undefined,
@@ -719,9 +723,11 @@ export async function registerProjectAndErrorRoutes(
         100,
       );
       const parameters = new QueryParameters();
+      const project = parameters.add(projectId);
+      const groupFingerprint = parameters.add(fingerprint);
       const conditions = [
-        `o.project_id = ${parameters.add(projectId)}`,
-        `${displayReadModelReady ? "display_group.fingerprint" : "COALESCE(eg.display_fingerprint, eg.fingerprint)"} = ${parameters.add(fingerprint)}`,
+        `o.project_id = ${project}`,
+        `${displayReadModelReady ? "display_group.fingerprint" : "COALESCE(eg.display_fingerprint, eg.fingerprint)"} = ${groupFingerprint}`,
         `o.occurred_at >= ${parameters.add(time.from)}`,
         `o.occurred_at < ${parameters.add(time.to)}`,
       ];
@@ -741,13 +747,25 @@ export async function registerProjectAndErrorRoutes(
       }
 
       const result = await pool.query(
-        `SELECT ${occurrenceSelect}
+        `${displayReadModelReady && !occurrenceDisplayReady
+          ? `WITH display_groups_for_request AS MATERIALIZED (
+               SELECT members.exact_group_id, groups.fingerprint
+               FROM display_error_groups groups
+               JOIN display_error_group_members members
+                 ON members.display_group_id = groups.id
+               WHERE groups.project_id = ${project}
+                 AND groups.fingerprint = ${groupFingerprint}
+             )`
+          : ""}
+         SELECT ${occurrenceSelect}
          FROM occurrences o
          JOIN error_groups eg ON eg.id = o.group_id
-         ${displayReadModelReady ? `JOIN display_error_group_members member
-           ON member.exact_group_id = o.group_id
-         JOIN display_error_groups display_group
-           ON display_group.id = member.display_group_id` : ""}
+         ${displayReadModelReady ? occurrenceDisplayReady
+           ? `JOIN display_error_groups display_group
+             ON display_group.id = o.display_group_id`
+           : `JOIN display_groups_for_request display_group
+             ON display_group.exact_group_id = o.group_id`
+           : ""}
          LEFT JOIN sessions s ON s.id = o.session_id
          WHERE ${conditions.join(" AND ")}
          ORDER BY o.occurred_at DESC, o.id DESC
@@ -780,6 +798,9 @@ export async function registerProjectAndErrorRoutes(
       );
       await requireProjectMembership(pool, request, projectId);
       const displayReadModelReady = await displayErrorReadModelReady(pool);
+      const occurrenceDisplayReady = displayReadModelReady
+        ? await occurrenceDisplayGroupIndexReady(pool)
+        : false;
       const query = request.query as Record<string, unknown>;
       const time = parseTimeRange(
         typeof query.from === "string" ? query.from : undefined,
@@ -808,7 +829,17 @@ export async function registerProjectAndErrorRoutes(
       }
 
       const result = await pool.query(
-        `WITH variants AS (
+        `${displayReadModelReady && !occurrenceDisplayReady
+          ? `WITH display_groups_for_request AS MATERIALIZED (
+               SELECT members.exact_group_id, groups.fingerprint
+               FROM display_error_groups groups
+               JOIN display_error_group_members members
+                 ON members.display_group_id = groups.id
+               WHERE groups.project_id = ${project}
+                 AND groups.fingerprint = ${groupFingerprint}
+             ),
+             variants AS (`
+          : "WITH variants AS ("}
            SELECT
              COALESCE(o.original_message, eg.normalized_message) AS message,
              SUM(o.repeat_count)::int AS event_count,
@@ -816,10 +847,12 @@ export async function registerProjectAndErrorRoutes(
              MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
            FROM occurrences o
            JOIN error_groups eg ON eg.id = o.group_id
-           ${displayReadModelReady ? `JOIN display_error_group_members member
-             ON member.exact_group_id = o.group_id
-           JOIN display_error_groups display_group
-             ON display_group.id = member.display_group_id` : ""}
+           ${displayReadModelReady ? occurrenceDisplayReady
+             ? `JOIN display_error_groups display_group
+               ON display_group.id = o.display_group_id`
+             : `JOIN display_groups_for_request display_group
+               ON display_group.exact_group_id = o.group_id`
+             : ""}
            WHERE o.project_id = ${project}
              AND ${displayReadModelReady ? "display_group.fingerprint" : "COALESCE(eg.display_fingerprint, eg.fingerprint)"} = ${groupFingerprint}
              AND o.occurred_at >= ${from}

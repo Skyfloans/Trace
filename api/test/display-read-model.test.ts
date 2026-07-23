@@ -136,3 +136,25 @@ test("display error impacts preserve exact data and bound distinct-count work", 
       < script.indexOf("display_error_impacts_v1"),
   );
 });
+
+test("occurrence display index is built online and verified before reads", async () => {
+  const migration = await readFile(
+    new URL("../../database/migrations/017_occurrence_display_group_index.sql", import.meta.url),
+    "utf8",
+  );
+  const script = await readFile(
+    new URL("../scripts/backfill-occurrence-display-groups.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /ADD COLUMN IF NOT EXISTS display_group_id UUID/);
+  assert.match(migration, /ON ONLY occurrences/);
+  assert.doesNotMatch(migration, /DROP TABLE|DELETE FROM occurrences/);
+  assert.match(script, /CREATE INDEX CONCURRENTLY IF NOT EXISTS/);
+  assert.match(script, /ATTACH PARTITION/);
+  assert.match(script, /Occurrence display-group verification failed/);
+  assert.ok(
+    script.indexOf("Occurrence display-group verification failed")
+      < script.indexOf("occurrence_display_group_index_v1"),
+  );
+});
