@@ -905,7 +905,7 @@ export async function registerProjectAndErrorRoutes(
            ${displayVariantsReady ? "" : `
            SELECT
              COALESCE(o.original_message, eg.normalized_message) AS message,
-             SUM(o.repeat_count)::int AS event_count,
+             SUM(o.repeat_count)::bigint AS event_count,
              MIN(o.occurred_at) AS first_seen_at,
              MAX(COALESCE(o.last_occurred_at, o.occurred_at)) AS last_seen_at
            FROM occurrences o

@@ -1116,7 +1116,7 @@ test("error message variants preserve and aggregate original IDs", async () => {
 
   assert.equal(response.statusCode, 200);
   assert.match(variantsSql, /COALESCE\(o\.original_message, eg\.normalized_message\)/);
-  assert.match(variantsSql, /SUM\(o\.repeat_count\)::int/);
+  assert.match(variantsSql, /SUM\(o\.repeat_count\)::bigint/);
   assert.deepEqual(response.json().data, [{
     message: "Failed to play animation: asset/?id=10921269718",
     count: 14,
