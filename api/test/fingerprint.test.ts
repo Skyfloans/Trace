@@ -184,6 +184,10 @@ test("long numeric IDs normalize across product types and datastore keys", () =>
       "DataStore request was added to queue. Key = UT_FRESH_V1_PLAYER_1920472371",
       "DataStore request was added to queue. Key = UT_FRESH_V1_PLAYER_<ID>",
     ],
+    [
+      "DataStore request was added to queue. Key = UT_FRESH_V1_INDEX_7836242142",
+      "DataStore request was added to queue. Key = UT_FRESH_V1_INDEX_<ID>",
+    ],
   ] as const;
 
   for (const [message, expected] of cases) {

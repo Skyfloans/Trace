@@ -12,7 +12,8 @@ const serviceUserIdPattern = /(\bUser\s+)\d{3,20}\b/gi;
 // are all decimal integers. Restrict this fallback to long values so ordinary
 // counts, line numbers, status codes, and version numbers remain meaningful.
 const longNumericIdentifierPattern = /(?<![A-Za-z0-9_])\d{7,20}(?![A-Za-z0-9_])/g;
-const recordKeyIdentifierPattern = /((?:PLAYER|USER)_)(\d{7,20})\b/gi;
+const recordKeyIdentifierPattern =
+  /((?:PLAYER|USER|INDEX)_)(\d{7,20})\b/gi;
 const loadedPlayerNamePattern = /^(Data loaded for player\s+)[A-Za-z0-9_]{3,20}$/i;
 
 function escapeRegExp(value: string): string {

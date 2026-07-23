@@ -222,3 +222,20 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
   assert.match(backfill, /AI_CLASSIFICATION_ENQUEUE_BATCH_SIZE/);
   assert.match(backfill, /ON CONFLICT \(target_type, target_id\) DO NOTHING/);
 });
+
+test("INDEX datastore groups are remapped across every fast read model", async () => {
+  const script = await readFile(
+    new URL("../scripts/remap-index-datastore-errors.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(script, /INDEX_REMAP_VALIDATE_ONLY/);
+  assert.match(script, /INDEX_\)\[0-9\]\{7,20\}/);
+  assert.match(script, /UPDATE display_error_group_members/);
+  assert.match(script, /UPDATE \$\{partition\} occurrences/);
+  assert.match(script, /INSERT INTO display_error_rollups_hourly/);
+  assert.match(script, /INSERT INTO display_error_variants_hourly/);
+  assert.match(script, /INSERT INTO display_error_group_players/);
+  assert.match(script, /INSERT INTO display_error_group_jobs/);
+  assert.match(script, /INDEX remap verification failed/);
+});

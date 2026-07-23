@@ -53,23 +53,33 @@ try {
           player_values.*,
           regexp_replace(
             regexp_replace(
-              player_message,
-              '(PLAYER_)[0-9]{7,20}(?![A-Za-z0-9_])',
+              regexp_replace(
+                player_message,
+                '(PLAYER_)[0-9]{7,20}(?![A-Za-z0-9_])',
+                '\\1<ID>',
+                'gi'
+              ),
+              '(USER_)[0-9]{7,20}(?![A-Za-z0-9_])',
               '\\1<ID>',
               'gi'
             ),
-            '(USER_)[0-9]{7,20}(?![A-Za-z0-9_])',
+            '(INDEX_)[0-9]{7,20}(?![A-Za-z0-9_])',
             '\\1<ID>',
             'gi'
           ) AS record_message,
           regexp_replace(
             regexp_replace(
-              source_script,
-              '(PLAYER_)[0-9]{7,20}(?![A-Za-z0-9_])',
+              regexp_replace(
+                source_script,
+                '(PLAYER_)[0-9]{7,20}(?![A-Za-z0-9_])',
+                '\\1<ID>',
+                'gi'
+              ),
+              '(USER_)[0-9]{7,20}(?![A-Za-z0-9_])',
               '\\1<ID>',
               'gi'
             ),
-            '(USER_)[0-9]{7,20}(?![A-Za-z0-9_])',
+            '(INDEX_)[0-9]{7,20}(?![A-Za-z0-9_])',
             '\\1<ID>',
             'gi'
           ) AS record_source_script
