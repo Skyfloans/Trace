@@ -308,63 +308,82 @@ async function applyResults(
   workerId: string,
   model: string,
 ): Promise<void> {
-  for (const result of results) {
-    if (target === "error") {
-      await client.query(
-        `UPDATE display_error_groups
-         SET ai_category = $2::error_ai_category,
-             ai_confidence = $3,
-             ai_reason = $4,
-             ai_classified_at = now(),
-             ai_model = $5,
-             ai_prompt_version = $6,
-             ai_status = 'classified'
-         WHERE id = $1`,
-        [
-          result.id,
-          result.category,
-          result.confidence,
-          result.reason,
-          model,
-          promptVersion,
-        ],
-      );
-      await client.query(
-        `UPDATE display_error_rollups_hourly
-         SET ai_category = $2::error_ai_category
-         WHERE display_group_id = $1
-           AND ai_category IS DISTINCT FROM $2::error_ai_category`,
-        [result.id, result.category],
-      );
-    } else {
-      await client.query(
-        `UPDATE feedback
-         SET ai_category = $2::feedback_ai_category,
-             ai_confidence = $3,
-             ai_reason = $4,
-             ai_classified_at = now(),
-             ai_model = $5,
-             ai_prompt_version = $6,
-             ai_status = 'classified'
-         WHERE id = $1`,
-        [
-          result.id,
-          result.category,
-          result.confidence,
-          result.reason,
-          model,
-          promptVersion,
-        ],
-      );
-    }
+  if (results.length === 0) return;
+  const ids = results.map((result) => result.id);
+  const categories = results.map((result) => result.category);
+  const confidences = results.map((result) => result.confidence);
+  const reasons = results.map((result) => result.reason);
+
+  if (target === "error") {
     await client.query(
-      `DELETE FROM ai_classification_jobs
-       WHERE target_type = $1::ai_classification_target
-         AND target_id = $2
-         AND locked_by = $3`,
-      [target, result.id, workerId],
+      `WITH input AS (
+         SELECT *
+         FROM unnest(
+           $1::uuid[],
+           $2::error_ai_category[],
+           $3::real[],
+           $4::text[]
+         ) AS input(id, category, confidence, reason)
+       )
+       UPDATE display_error_groups groups
+       SET ai_category = input.category,
+           ai_confidence = input.confidence,
+           ai_reason = input.reason,
+           ai_classified_at = now(),
+           ai_model = $5,
+           ai_prompt_version = $6,
+           ai_status = 'classified'
+       FROM input
+       WHERE groups.id = input.id`,
+      [ids, categories, confidences, reasons, model, promptVersion],
+    );
+    await client.query(
+      `WITH input AS (
+         SELECT *
+         FROM unnest(
+           $1::uuid[],
+           $2::error_ai_category[]
+         ) AS input(id, category)
+       )
+       UPDATE display_error_rollups_hourly rollups
+       SET ai_category = input.category
+       FROM input
+       WHERE rollups.display_group_id = input.id
+         AND rollups.ai_category IS DISTINCT FROM input.category`,
+      [ids, categories],
+    );
+  } else {
+    await client.query(
+      `WITH input AS (
+         SELECT *
+         FROM unnest(
+           $1::uuid[],
+           $2::feedback_ai_category[],
+           $3::real[],
+           $4::text[]
+         ) AS input(id, category, confidence, reason)
+       )
+       UPDATE feedback
+       SET ai_category = input.category,
+           ai_confidence = input.confidence,
+           ai_reason = input.reason,
+           ai_classified_at = now(),
+           ai_model = $5,
+           ai_prompt_version = $6,
+           ai_status = 'classified'
+       FROM input
+       WHERE feedback.id = input.id`,
+      [ids, categories, confidences, reasons, model, promptVersion],
     );
   }
+  await client.query(
+    `DELETE FROM ai_classification_jobs jobs
+     USING unnest($2::uuid[]) AS input(id)
+     WHERE jobs.target_type = $1::ai_classification_target
+       AND jobs.target_id = input.id
+       AND jobs.locked_by = $3`,
+    [target, ids, workerId],
+  );
 }
 
 async function discardMissingTargets(
