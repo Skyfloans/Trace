@@ -2,6 +2,19 @@ import { z } from "zod";
 
 export const severitySchema = z.enum(["trace", "info", "warning", "error"]);
 export const sideSchema = z.enum(["client", "server"]);
+export const errorAICategorySchema = z.enum([
+  "critical",
+  "high",
+  "medium",
+  "low",
+  "not_a_bug",
+]);
+export const feedbackAICategorySchema = z.enum([
+  "bug_report",
+  "critique",
+  "suggestion",
+  "general",
+]);
 
 const cursorEnvelopeSchema = z.object({
   version: z.literal(1),

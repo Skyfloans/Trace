@@ -3,6 +3,7 @@ import { buildApp } from "./app.js";
 import { config } from "./config.js";
 import { createPool, withTransaction } from "./db.js";
 import { archiveEligiblePartitions } from "./telemetry-archive.js";
+import { startAIClassificationWorker } from "./ai-classification.js";
 
 const ingestionPool = createPool(config.DATABASE_URL, 16);
 const readPool = createPool(config.DATABASE_URL, 8);
@@ -25,6 +26,7 @@ const app = await buildApp(
   archiveStorage,
 );
 let maintenanceTimer: NodeJS.Timeout | undefined;
+let stopClassificationWorkers: (() => Promise<void>) | undefined;
 
 async function runMaintenance(): Promise<void> {
   await ingestionPool.query("SELECT ensure_occurrence_partitions(3)");
@@ -59,6 +61,7 @@ app.addHook("onClose", async () => {
   if (maintenanceTimer) {
     clearInterval(maintenanceTimer);
   }
+  await stopClassificationWorkers?.();
   archiveStorage?.close();
   await Promise.all([ingestionPool.end(), readPool.end()]);
 });
@@ -84,6 +87,35 @@ try {
   }
 
   await app.listen({ host: config.HOST, port: config.PORT });
+
+  if (config.OPENROUTER_API_KEY) {
+    const workers = Array.from(
+      { length: config.AI_CLASSIFICATION_CONCURRENCY },
+      () => startAIClassificationWorker({
+        pool: ingestionPool,
+        apiKey: config.OPENROUTER_API_KEY!,
+        model: config.OPENROUTER_MODEL,
+        webOrigin: config.WEB_ORIGIN,
+        batchSize: config.AI_CLASSIFICATION_BATCH_SIZE,
+        logger: app.log,
+      }),
+    );
+    stopClassificationWorkers = async () => {
+      await Promise.all(workers.map((stop) => stop()));
+    };
+    app.log.info(
+      {
+        model: config.OPENROUTER_MODEL,
+        concurrency: config.AI_CLASSIFICATION_CONCURRENCY,
+        batchSize: config.AI_CLASSIFICATION_BATCH_SIZE,
+      },
+      "AI classification worker started",
+    );
+  } else {
+    app.log.warn(
+      "OPENROUTER_API_KEY is not configured; AI classifications are paused",
+    );
+  }
 
   void runMaintenance().catch((error: unknown) => {
     app.log.error(error, "initial database maintenance failed");

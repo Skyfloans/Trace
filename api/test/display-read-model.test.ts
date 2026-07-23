@@ -184,3 +184,30 @@ test("display variants are retained hourly and verified before fast reads", asyn
       < script.indexOf("display_error_variants_v1"),
   );
 });
+
+test("AI classification queues normalized groups and keeps filters indexed", async () => {
+  const migration = await readFile(
+    new URL("../../database/migrations/019_ai_classification.sql", import.meta.url),
+    "utf8",
+  );
+  const indexes = await readFile(
+    new URL("../../database/migrations/020_ai_classification_indexes.sql", import.meta.url),
+    "utf8",
+  );
+  const backfill = await readFile(
+    new URL("../scripts/enqueue-ai-classification-backfill.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /ALTER TABLE display_error_groups/);
+  assert.match(migration, /ALTER TABLE feedback/);
+  assert.match(migration, /CREATE TABLE ai_classification_jobs/);
+  assert.match(migration, /AFTER INSERT ON display_error_groups/);
+  assert.match(migration, /AFTER INSERT ON feedback/);
+  assert.doesNotMatch(migration, /ALTER TABLE occurrences|DELETE FROM occurrences/);
+  assert.match(indexes, /CREATE INDEX CONCURRENTLY/);
+  assert.match(indexes, /display_error_rollups_ai_filter_idx/);
+  assert.match(indexes, /feedback_project_ai_category_time_idx/);
+  assert.match(backfill, /AI_CLASSIFICATION_ENQUEUE_BATCH_SIZE/);
+  assert.match(backfill, /ON CONFLICT \(target_type, target_id\) DO NOTHING/);
+});

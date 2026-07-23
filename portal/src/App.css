@@ -569,7 +569,7 @@ kbd {
 
 .error-grid {
   display: grid;
-  grid-template-columns: 70px 104px 82px 164px minmax(220px, 1fr);
+  grid-template-columns: 70px 100px 112px 76px 150px minmax(220px, 1fr);
   align-items: center;
   gap: 8px;
   padding: 0 8px;
@@ -599,6 +599,68 @@ kbd {
 .severity-badge.error { color: var(--error); background: var(--error-soft); }
 .severity-badge.warning { color: var(--warning); background: var(--warning-soft); }
 .severity-badge.info { color: var(--info); background: var(--info-soft); }
+
+.classification-badge {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: #b7c4cd;
+  background: #202d37;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.classification-badge.error.critical,
+.classification-badge.feedback.bug-report {
+  border-color: #714149;
+  color: #ffb1aa;
+  background: #2b1d22;
+}
+
+.classification-badge.error.high {
+  border-color: #76503d;
+  color: #f5b38f;
+  background: #2d211d;
+}
+
+.classification-badge.error.medium {
+  border-color: #695a38;
+  color: #e9cb86;
+  background: #29251c;
+}
+
+.classification-badge.error.low,
+.classification-badge.feedback.suggestion {
+  border-color: #355c6d;
+  color: #9ddcf2;
+  background: #18272f;
+}
+
+.classification-badge.feedback.critique {
+  border-color: #514a76;
+  color: #c9c0f2;
+  background: #211f31;
+}
+
+.classification-badge.error.not-a-bug,
+.classification-badge.feedback.general {
+  border-color: #40505c;
+  color: #b7c4cd;
+  background: #1c2831;
+}
+
+.classification-badge.pending,
+.classification-badge.failed {
+  border-color: #41515d;
+  color: #aebbc5;
+  background: transparent;
+}
 
 .event-message { min-width: 0; }
 .event-message strong,
@@ -758,6 +820,12 @@ kbd {
 .player-sessions-section { scroll-margin-top: 86px; }
 
 .feedback-page { max-width: 1180px; }
+.feedback-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-bottom: 24px;
+}
 .feedback-table {
   overflow: hidden;
   border: 1px solid var(--line);
@@ -791,6 +859,7 @@ kbd {
 .feedback-device-cell, .feedback-time { color: var(--muted); font-size: 12px; }
 .feedback-time { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; }
 .feedback-message { min-width: 0; margin: 0; color: var(--ink); font-size: 13px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.feedback-comment { min-width: 0; display: grid; justify-items: start; gap: 7px; }
 .feedback-session-cell { justify-self: end; color: var(--muted); font-size: 12px; }
 .feedback-session-expired { display: inline-block; padding: 6px 0; }
 .feedback-session-button {
@@ -1311,7 +1380,8 @@ kbd {
 .error-console > header strong { color: var(--error); }
 .error-console.warning > header strong { color: var(--warning); }
 .error-console.info > header strong { color: var(--info); }
-.error-console > header span::before { content: "·"; margin-right: 8px; color: #566977; }
+.error-console > header > div > span:not(.classification-badge)::before { content: "·"; margin-right: 8px; color: #566977; }
+.error-console > header .classification-badge { margin-left: 4px; }
 .error-console > header time { white-space: nowrap; }
 
 .error-console-body {
@@ -2001,8 +2071,8 @@ kbd {
   .chart-wrap { height: 220px; }
   .chart-wrap text { font-size: 11px; }
   .first-seen { display: none; }
-  .error-grid { grid-template-columns: 58px 88px 64px minmax(170px, 1fr); }
-  .error-grid > :nth-child(4) { display: none; }
+  .error-grid { grid-template-columns: 58px 88px 104px 64px minmax(170px, 1fr); }
+  .error-grid > :nth-child(5) { display: none; }
   .player-profile { display: block; padding-top: 10px; }
   .player-identity { min-width: 0; }
   .player-detail-profile .player-identity { min-width: 0; flex-wrap: nowrap; }
@@ -2044,7 +2114,7 @@ kbd {
   .feedback-player { grid-column: 1; grid-row: 1; }
   .feedback-device-cell { grid-column: 2; grid-row: 1; }
   .feedback-time { grid-column: 1 / -1; }
-  .feedback-message { grid-column: 1 / -1; }
+  .feedback-comment { grid-column: 1 / -1; }
   .feedback-session-cell { grid-column: 1 / -1; justify-self: start; }
   .feedback-session-button { min-height: 40px; }
   .setup-workspace,
@@ -2100,8 +2170,9 @@ kbd {
   .logs-toolbar .select-control { flex-basis: 100%; }
   .section-heading { align-items: flex-start; }
   .chart-legend { gap: 9px; }
-  .error-grid { grid-template-columns: 48px 76px minmax(0, 1fr); gap: 4px; padding-inline: 0; }
-  .error-grid > :nth-child(3) { display: none; }
+  .error-grid { grid-template-columns: 48px 76px 94px minmax(0, 1fr); gap: 4px; padding-inline: 0; }
+  .error-grid > :nth-child(4),
+  .error-grid > :nth-child(5) { display: none; }
   .session-grid { grid-template-columns: minmax(140px, 1fr) 44px 48px; }
   .session-grid > :nth-child(2) { display: none; }
   .all-logs-table .table-head { display: none; }

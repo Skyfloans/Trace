@@ -15,6 +15,20 @@ const environmentSchema = z
     ROBLOX_OAUTH_CLIENT_ID: z.string().min(1).optional(),
     ROBLOX_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
     ROBLOX_OAUTH_REDIRECT_URI: z.string().url().optional(),
+    OPENROUTER_API_KEY: z.string().trim().min(20).optional(),
+    OPENROUTER_MODEL: z.string().trim().min(1).default("openai/gpt-5.4-nano"),
+    AI_CLASSIFICATION_BATCH_SIZE: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(50)
+      .default(32),
+    AI_CLASSIFICATION_CONCURRENCY: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(8)
+      .default(3),
     LOG_LEVEL: z
       .enum(["fatal", "error", "warn", "info", "debug", "trace", "silent"])
       .default("info"),

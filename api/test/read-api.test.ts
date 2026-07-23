@@ -957,11 +957,17 @@ test("current grouped logs use the indexed display read model", async () => {
     url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors?${range}&severity=error,warning&sort=count&limit=25&cursor=${encodeURIComponent(cursor)}`,
     headers: { authorization: `Bearer ${"x".repeat(40)}` },
   });
+  const critical = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors?${range}&severity=error,warning&classification=critical&sort=count&limit=25`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
 
   assert.equal(recent.statusCode, 200);
   assert.equal(count.statusCode, 200);
   assert.equal(recentPageTwo.statusCode, 200);
   assert.equal(countPageTwo.statusCode, 200);
+  assert.equal(critical.statusCode, 200);
   assert.equal(recent.json().data[0].title, "Data loaded for player <PLAYER_NAME>");
   assert.match(queries[0]!, /FROM display_error_groups deg/);
   assert.match(queries[0]!, /ORDER BY deg\.last_seen_at DESC, deg\.fingerprint DESC/);
@@ -980,6 +986,10 @@ test("current grouped logs use the indexed display read model", async () => {
   assert.match(
     queries[3]!,
     /\(event_count, last_seen_at, display_group_id::text\) < \(/,
+  );
+  assert.match(
+    queries[4]!,
+    /r\.ai_category = ANY\(\$\d+::error_ai_category\[\]\)/,
   );
   await app.close();
 });
@@ -2032,6 +2042,7 @@ test("an admin cannot delete a project", async () => {
 
 test("feedback is returned with player and session attribution", async () => {
   const submittedAt = new Date();
+  let feedbackSql = "";
   const pool = {
     query: async (sql: string) => {
       if (sql.includes("FROM web_sessions")) {
@@ -2041,6 +2052,7 @@ test("feedback is returned with player and session attribution", async () => {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
       if (sql.includes("FROM feedback f")) {
+        feedbackSql = sql;
         return { rows: [{
           id: "30000000-0000-4000-8000-000000000001",
           message: "The round timer feels too long.",
@@ -2059,7 +2071,7 @@ test("feedback is returned with player and session attribution", async () => {
   const app = await buildApp(pool);
   const response = await app.inject({
     method: "GET",
-    url: "/v1/projects/20000000-0000-4000-8000-000000000001/feedback",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/feedback?category=critique",
     headers: { authorization: `Bearer ${"f".repeat(40)}` },
   });
   assert.equal(response.statusCode, 200);
@@ -2068,9 +2080,19 @@ test("feedback is returned with player and session attribution", async () => {
     message: "The round timer feels too long.",
     submittedAt: submittedAt.toISOString(),
     sessionId: "40000000-0000-4000-8000-000000000001",
+    classification: {
+      category: null,
+      confidence: null,
+      reason: null,
+      status: "pending",
+    },
     player: { robloxUserId: "123", username: "skyfloans", displayName: "Sky", avatarUrl: null },
     device: "desktop",
   });
+  assert.match(
+    feedbackSql,
+    /f\.ai_category = ANY\(\$\d+::feedback_ai_category\[\]\)/,
+  );
   await app.close();
 });
 

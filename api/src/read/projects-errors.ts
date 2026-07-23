@@ -9,6 +9,7 @@ import {
   parseTimeRange,
   clampLimit,
   ReadApiError,
+  errorAICategorySchema,
   severitySchema,
   sideSchema,
 } from "./http.js";
@@ -57,6 +58,12 @@ function readListFilters(query: Record<string, unknown>) {
     sides: parseCsvEnum(
       typeof query.side === "string" ? query.side : undefined,
       sideSchema,
+    ),
+    categories: parseCsvEnum(
+      typeof query.classification === "string"
+        ? query.classification
+        : undefined,
+      errorAICategorySchema,
     ),
   };
 }
@@ -152,7 +159,7 @@ export async function registerProjectAndErrorRoutes(
       const { projectId } = projectParamsSchema.parse(request.params);
       await requireProjectMembership(pool, request, projectId);
       const query = request.query as Record<string, unknown>;
-      const { time, severities, sides } = readListFilters(query);
+      const { time, severities, sides, categories } = readListFilters(query);
       const limit = clampLimit(query.limit as string | undefined, 50, 100);
       const sort = z
         .enum(["count", "recent"])
@@ -170,6 +177,9 @@ export async function registerProjectAndErrorRoutes(
       const to = parameters.add(time.to);
       const severity = parameters.addArray(severities);
       const side = sides ? parameters.addArray(sides) : null;
+      const classification = categories
+        ? parameters.addArray(categories)
+        : null;
       const metadataConditions = [
         `eg.project_id = ${project}`,
         `eg.last_seen_at >= ${from}`,
@@ -220,6 +230,10 @@ export async function registerProjectAndErrorRoutes(
               deg.source,
               deg.normalized_message,
               deg.source_script,
+              deg.ai_category,
+              deg.ai_confidence,
+              deg.ai_reason,
+              deg.ai_status,
               deg.last_seen_at AS cursor_last_seen_at
             FROM display_error_groups deg
             WHERE deg.project_id = ${project}
@@ -227,6 +241,9 @@ export async function registerProjectAndErrorRoutes(
               AND deg.first_seen_at < ${to}
               AND deg.level = ANY(${severity}::log_level[])
               ${side ? `AND deg.source = ANY(${side}::log_source[])` : ""}
+              ${classification
+                ? `AND deg.ai_category = ANY(${classification}::error_ai_category[])`
+                : ""}
               ${cursorCondition}
             ORDER BY deg.last_seen_at DESC, deg.fingerprint DESC
             LIMIT ${rowLimit}
@@ -238,6 +255,10 @@ export async function registerProjectAndErrorRoutes(
             candidate_groups.source,
             candidate_groups.normalized_message,
             candidate_groups.source_script,
+            candidate_groups.ai_category,
+            candidate_groups.ai_confidence,
+            candidate_groups.ai_reason,
+            candidate_groups.ai_status,
             SUM(r.event_count)::int AS event_count,
             MIN(r.first_seen_at) AS first_seen_at,
             MAX(r.last_seen_at) AS last_seen_at,
@@ -256,6 +277,10 @@ export async function registerProjectAndErrorRoutes(
             candidate_groups.source,
             candidate_groups.normalized_message,
             candidate_groups.source_script,
+            candidate_groups.ai_category,
+            candidate_groups.ai_confidence,
+            candidate_groups.ai_reason,
+            candidate_groups.ai_status,
             candidate_groups.cursor_last_seen_at
           ORDER BY candidate_groups.cursor_last_seen_at DESC,
                    candidate_groups.group_id DESC`;
@@ -280,6 +305,9 @@ export async function registerProjectAndErrorRoutes(
               AND r.bucket_at < ${to}
               AND r.level = ANY(${severity}::log_level[])
               ${side ? `AND r.source = ANY(${side}::log_source[])` : ""}
+              ${classification
+                ? `AND r.ai_category = ANY(${classification}::error_ai_category[])`
+                : ""}
             GROUP BY r.display_group_id
           ), paged AS (
             SELECT *
@@ -297,6 +325,10 @@ export async function registerProjectAndErrorRoutes(
             deg.source,
             deg.normalized_message,
             deg.source_script,
+            deg.ai_category,
+            deg.ai_confidence,
+            deg.ai_reason,
+            deg.ai_status,
             paged.event_count,
             paged.first_seen_at,
             paged.last_seen_at,
@@ -324,6 +356,10 @@ export async function registerProjectAndErrorRoutes(
               deg.source,
               deg.normalized_message,
               deg.source_script,
+              deg.ai_category,
+              deg.ai_confidence,
+              deg.ai_reason,
+              deg.ai_status,
               stats.event_count,
               stats.first_seen_at,
               stats.last_seen_at
@@ -332,6 +368,9 @@ export async function registerProjectAndErrorRoutes(
             WHERE deg.project_id = ${project}
               AND deg.level = ANY(${severity}::log_level[])
               ${side ? `AND deg.source = ANY(${side}::log_source[])` : ""}
+              ${classification
+                ? `AND deg.ai_category = ANY(${classification}::error_ai_category[])`
+                : ""}
           )
           SELECT *
           FROM filtered
@@ -523,6 +562,15 @@ export async function registerProjectAndErrorRoutes(
           side: row.source,
           title: row.normalized_message,
           source: row.source_script,
+          classification: {
+            category: row.ai_category ?? null,
+            confidence:
+              row.ai_confidence === null || row.ai_confidence === undefined
+                ? null
+                : Number(row.ai_confidence),
+            reason: row.ai_reason ?? null,
+            status: row.ai_status ?? "pending",
+          },
           count: Number(row.event_count),
           firstSeenAt: iso(row.first_seen_at),
           lastSeenAt: iso(row.last_seen_at),
@@ -555,7 +603,8 @@ export async function registerProjectAndErrorRoutes(
       const result = await pool.query(
         displayImpactsReady ? `WITH requested_group AS MATERIALIZED (
            SELECT
-             id, fingerprint, level, source, normalized_message, source_script
+             id, fingerprint, level, source, normalized_message, source_script,
+             ai_category, ai_confidence, ai_reason, ai_status
            FROM display_error_groups
            WHERE project_id = $1 AND fingerprint = $2
          ),
@@ -616,6 +665,10 @@ export async function registerProjectAndErrorRoutes(
            requested_group.source AS group_source,
            requested_group.normalized_message AS group_message,
            requested_group.source_script AS group_source_script,
+           requested_group.ai_category,
+           requested_group.ai_confidence,
+           requested_group.ai_reason,
+           requested_group.ai_status,
            ${occurrenceSelect}
          FROM requested_group
          CROSS JOIN stats
@@ -657,6 +710,10 @@ export async function registerProjectAndErrorRoutes(
            ${displayReadModelReady ? "display_group.source" : "eg.source"} AS group_source,
            ${displayReadModelReady ? "display_group.normalized_message" : "COALESCE(eg.display_message, eg.normalized_message)"} AS group_message,
            ${displayReadModelReady ? "display_group.source_script" : "COALESCE(eg.display_source_script, eg.source_script)"} AS group_source_script,
+           ${displayReadModelReady ? "display_group.ai_category" : "NULL"} AS ai_category,
+           ${displayReadModelReady ? "display_group.ai_confidence" : "NULL"} AS ai_confidence,
+           ${displayReadModelReady ? "display_group.ai_reason" : "NULL"} AS ai_reason,
+           ${displayReadModelReady ? "display_group.ai_status" : "'pending'"} AS ai_status,
            ${occurrenceSelect}
          FROM stats
          JOIN latest o ON true
@@ -686,6 +743,13 @@ export async function registerProjectAndErrorRoutes(
           side: row.group_source,
           title: row.group_message,
           source: row.group_source_script,
+          classification: {
+            category: row.ai_category,
+            confidence:
+              row.ai_confidence === null ? null : Number(row.ai_confidence),
+            reason: row.ai_reason,
+            status: row.ai_status,
+          },
           count: row.event_count,
           affectedPlayerCount: row.affected_player_count,
           affectedServerCount: row.affected_server_count,
@@ -955,7 +1019,7 @@ export async function registerProjectAndErrorRoutes(
       const { projectId } = projectParamsSchema.parse(request.params);
       await requireProjectMembership(pool, request, projectId);
       const query = request.query as Record<string, unknown>;
-      const { time, severities, sides } = readListFilters(query);
+      const { time, severities, sides, categories } = readListFilters(query);
       const bucket = z
         .enum(["minute", "hour", "day"])
         .parse(typeof query.bucket === "string" ? query.bucket : "hour");
@@ -986,6 +1050,9 @@ export async function registerProjectAndErrorRoutes(
       const from = parameters.add(time.from);
       const to = parameters.add(time.to);
       const severity = parameters.addArray(severities);
+      const classification = categories
+        ? parameters.addArray(categories)
+        : null;
       const rawConditions = [
         `o.project_id = ${project}`,
         `o.occurred_at >= ${from}`,
@@ -994,6 +1061,16 @@ export async function registerProjectAndErrorRoutes(
       ];
       const side = sides ? parameters.addArray(sides) : null;
       if (side) rawConditions.push(`eg.source = ANY(${side}::log_source[])`);
+      if (classification && displayReadModelReady) {
+        rawConditions.push(
+          `o.display_group_id IN (
+             SELECT id
+             FROM display_error_groups
+             WHERE project_id = ${project}
+               AND ai_category = ANY(${classification}::error_ai_category[])
+           )`,
+        );
+      }
 
       let sql: string;
       if (rollupsReady) {
@@ -1041,6 +1118,11 @@ export async function registerProjectAndErrorRoutes(
           if (side) {
             displayFilterConditions.push(
               `r.source = ANY(${side}::log_source[])`,
+            );
+          }
+          if (classification) {
+            displayFilterConditions.push(
+              `r.ai_category = ANY(${classification}::error_ai_category[])`,
             );
           }
           segments.push(displayRollupFiltersReady ? `SELECT

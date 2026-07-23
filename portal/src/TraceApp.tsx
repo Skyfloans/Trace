@@ -8,7 +8,7 @@ import {
 import {
   ApiError, apiDelete, apiGet, apiPost, apiUrl, getRobloxGameMetadata, getRobloxPlayerHeadshots, projectPath, queryString, timeRange,
   type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type ErrorMessageVariant, type FeedbackEntry, type GroupedError, type GroupedErrorSummary,
-  type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
+  type AIClassification, type ErrorAICategory, type FeedbackAICategory, type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
   type RobloxGameMetadata, type ServerJob, type Session, type Severity,
 } from './api'
 import './App.css'
@@ -56,6 +56,21 @@ const compactNumberFormatter = new Intl.NumberFormat(undefined, {
 })
 const resourceCache = new Map<string, { data: unknown; expiresAt: number }>()
 const resourceLoads = new Map<string, Promise<unknown>>()
+const ERROR_CLASSIFICATION_OPTIONS: Array<[string, string]> = [
+  ['all', 'All priorities'],
+  ['critical', 'Critical'],
+  ['high', 'High'],
+  ['medium', 'Medium'],
+  ['low', 'Low'],
+  ['not_a_bug', 'Not a bug'],
+]
+const FEEDBACK_CLASSIFICATION_OPTIONS: Array<[string, string]> = [
+  ['all', 'All categories'],
+  ['bug_report', 'Bug report'],
+  ['critique', 'Critique'],
+  ['suggestion', 'Suggestion'],
+  ['general', 'General'],
+]
 
 type PortalRoute = {
   page: Page
@@ -573,26 +588,28 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
   const [timeRangeValue, setTimeRangeValue] = useState('8')
   const [severity, setSeverity] = useState('all')
   const [side, setSide] = useState('all')
+  const [classification, setClassification] = useState('all')
   const hours = Number(timeRangeValue)
   const range = useMemo(() => timeRange(hours), [hours])
   const filters = queryString({
     ...range,
     severity: severity === 'all' ? 'error,warning' : severity,
     side: side === 'all' ? undefined : side,
+    classification: classification === 'all' ? undefined : classification,
   })
   const activity = useResource(
-    (signal) => apiGet<{ data: ActivityBucket[] }>(projectPath(project.id, `/activity${queryString({ ...range, bucket: hours <= 24 ? 'hour' : 'day', severity: severity === 'all' ? 'error,warning' : severity, side: side === 'all' ? undefined : side })}`), signal),
-    `${project.id}:${timeRangeValue}:${severity}:${side}:activity`,
+    (signal) => apiGet<{ data: ActivityBucket[] }>(projectPath(project.id, `/activity${queryString({ ...range, bucket: hours <= 24 ? 'hour' : 'day', severity: severity === 'all' ? 'error,warning' : severity, side: side === 'all' ? undefined : side, classification: classification === 'all' ? undefined : classification })}`), signal),
+    `${project.id}:${timeRangeValue}:${severity}:${side}:${classification}:activity`,
   )
   const grouped = useResource(
     (signal) => apiGet<CursorPage<GroupedErrorSummary>>(projectPath(project.id, `/errors${filters}`), signal),
-    `${project.id}:${timeRangeValue}:${severity}:${side}:errors`,
+    `${project.id}:${timeRangeValue}:${severity}:${side}:${classification}:errors`,
   )
   const [additionalErrors, setAdditionalErrors] = useState<GroupedErrorSummary[]>([])
   const [errorCursor, setErrorCursor] = useState<string | null>(null)
   const [loadingMoreErrors, setLoadingMoreErrors] = useState(false)
   const [paginationError, setPaginationError] = useState<ApiError | null>(null)
-  const filtersChanged = timeRangeValue !== '8' || severity !== 'all' || side !== 'all'
+  const filtersChanged = timeRangeValue !== '8' || severity !== 'all' || side !== 'all' || classification !== 'all'
   const dashboardErrors = [...(grouped.data?.data ?? []), ...additionalErrors]
 
   useEffect(() => {
@@ -623,8 +640,9 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
       <div className="filter-bar" aria-label="Dashboard filters">
         <LabeledSelect label="Time range" value={timeRangeValue} onChange={setTimeRangeValue} options={[['1', 'Last hour'], ['8', 'Last 8 hours'], ['24', 'Last 24 hours'], ['72', 'Last 3 days']]} />
         <LabeledSelect label="Severity" value={severity} onChange={setSeverity} options={[['all', 'All'], ['error', 'Error'], ['warning', 'Warning']]} />
+        <LabeledSelect label="AI priority" value={classification} onChange={setClassification} options={ERROR_CLASSIFICATION_OPTIONS} />
         <LabeledSelect label="Log source" value={side} onChange={setSide} options={[['all', 'All'], ['client', 'Client'], ['server', 'Server']]} />
-        {filtersChanged && <button className="clear-button" onClick={() => { setTimeRangeValue('8'); setSeverity('all'); setSide('all') }}>Reset filters</button>}
+        {filtersChanged && <button className="clear-button" onClick={() => { setTimeRangeValue('8'); setSeverity('all'); setClassification('all'); setSide('all') }}>Reset filters</button>}
       </div>
       <section className="chart-section" aria-labelledby="error-activity-title">
         <div className="section-heading">
@@ -637,10 +655,10 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
         <div className="section-heading"><div><h2 id="common-errors-title">Errors and warnings by count</h2><p>Most frequent events first</p></div><button className="text-button" onClick={onOpenLogs}>Open all logs</button></div>
         {grouped.error ? <InlineError error={grouped.error} retry={grouped.reload} /> : grouped.loading && !grouped.data ? <RowsLoading /> : dashboardErrors.length ? (
           <div className="error-table">
-            <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>Type</span><span>First seen</span><span>Message</span></div>
+            <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>AI priority</span><span>Type</span><span>First seen</span><span>Message</span></div>
             {dashboardErrors.map((error) => (
-              <button className="error-grid" key={error.fingerprint} onClick={() => onOpenError(error.fingerprint)} aria-label={`Open error detail. ${exactNumberFormatter.format(error.count)} occurrences. Severity ${error.severity}. Type ${error.side}. Message: ${error.title}.`}>
-                <strong className="event-count" title={`${exactNumberFormatter.format(error.count)} occurrences`}>{formatCount(error.count)}</strong><SeverityBadge level={error.severity} /><span className="secondary">{labelSide(error.side)}</span><time className="secondary first-seen">{formatDate(error.firstSeenAt)}</time><span className={`event-message ${error.severity}`}><strong>{error.title}</strong><code>{error.source ?? 'Unknown source'}</code></span>
+              <button className="error-grid" key={error.fingerprint} onClick={() => onOpenError(error.fingerprint)} aria-label={`Open error detail. ${exactNumberFormatter.format(error.count)} occurrences. Severity ${error.severity}. AI priority ${labelErrorClassification(error.classification.category, error.classification.status)}. Type ${error.side}. Message: ${error.title}.`}>
+                <strong className="event-count" title={`${exactNumberFormatter.format(error.count)} occurrences`}>{formatCount(error.count)}</strong><SeverityBadge level={error.severity} /><ClassificationBadge kind="error" classification={error.classification} /><span className="secondary">{labelSide(error.side)}</span><time className="secondary first-seen">{formatDate(error.firstSeenAt)}</time><span className={`event-message ${error.severity}`}><strong>{error.title}</strong><code>{error.source ?? 'Unknown source'}</code></span>
               </button>
             ))}
           </div>
@@ -906,10 +924,16 @@ function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId
   onOpenSession: (sessionId: string) => void
 }) {
   const [pagination, setPagination] = useState<{ page: number; cursors: Array<string | null> }>({ page: 1, cursors: [null] })
+  const [category, setCategory] = useState('all')
   const cursor = pagination.cursors[pagination.page - 1] ?? null
+  const feedbackQuery = queryString({
+    limit: 25,
+    cursor,
+    category: category === 'all' ? undefined : category,
+  })
   const resource = useResource(
-    (signal) => apiGet<CursorPage<FeedbackEntry>>(projectPath(project.id, `/feedback${queryString({ limit: 25, cursor })}`), signal),
-    `${project.id}:feedback:${cursor ?? 'first'}`,
+    (signal) => apiGet<CursorPage<FeedbackEntry>>(projectPath(project.id, `/feedback${feedbackQuery}`), signal),
+    `${project.id}:feedback:${category}:${cursor ?? 'first'}`,
   )
   const entries = useMemo(() => resource.data?.data ?? [], [resource.data])
   const playerIds = useMemo(() => [...new Set(entries.map((entry) => entry.player.robloxUserId))], [entries])
@@ -918,7 +942,7 @@ function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId
     `${project.id}:feedback-headshots:${playerIds.join(',')}`,
     playerIds.length > 0,
   )
-  useEffect(() => setPagination({ page: 1, cursors: [null] }), [project.id])
+  useEffect(() => setPagination({ page: 1, cursors: [null] }), [project.id, category])
   const nextPage = () => {
     const nextCursor = resource.data?.nextCursor
     if (!nextCursor || resource.loading) return
@@ -932,10 +956,14 @@ function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId
 
   return <div className="feedback-page">
     <PageTitle title="Feedback" copy={`Player-submitted feedback for ${project.name}, connected to the session where it was sent.`} action={<ProjectSwitcher project={project} projects={projects} open={projectMenu} setOpen={setProjectMenu} setProjectId={setProjectId} />} />
+    <div className="feedback-toolbar" aria-label="Feedback filters">
+      <LabeledSelect label="AI category" value={category} onChange={setCategory} options={FEEDBACK_CLASSIFICATION_OPTIONS} />
+      {category !== 'all' && <button className="clear-button" onClick={() => setCategory('all')}>Reset filter</button>}
+    </div>
     <section className="data-section feedback-section" aria-labelledby="feedback-list-title">
       <div className="section-heading"><div><h2 id="feedback-list-title">Recent responses</h2><p>Newest first · Page {pagination.page}</p></div>{resource.data && <span className="result-count">{entries.length} {entries.length === 1 ? 'response' : 'responses'}</span>}</div>
       {resource.error ? <InlineError error={resource.error} retry={resource.reload} /> : resource.loading && !resource.data ? <RowsLoading /> : entries.length ? <div className="feedback-table" role="table" aria-label="Player feedback">
-        <div className="feedback-table-head feedback-row" role="row"><span role="columnheader">Player</span><span role="columnheader">Device</span><span role="columnheader">Submitted</span><span role="columnheader">Comment</span><span role="columnheader">Session</span></div>
+        <div className="feedback-table-head feedback-row" role="row"><span role="columnheader">Player</span><span role="columnheader">Device</span><span role="columnheader">Submitted</span><span role="columnheader">Category / comment</span><span role="columnheader">Session</span></div>
         {entries.map((entry) => <article className="feedback-row" role="row" key={entry.id}>
           <div className="feedback-player" role="cell">
             <PlayerAvatar player={entry.player} headshot={headshots.data?.[entry.player.robloxUserId] ?? null} />
@@ -943,12 +971,12 @@ function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId
           </div>
           <span className="feedback-device-cell" role="cell">{entry.device ?? 'Unknown'}</span>
           <time className="feedback-time" role="cell" dateTime={entry.submittedAt}>{formatDate(entry.submittedAt)}</time>
-          <p className="feedback-message" role="cell">{entry.message}</p>
+          <div className="feedback-comment" role="cell"><ClassificationBadge kind="feedback" classification={entry.classification} /><p className="feedback-message">{entry.message}</p></div>
           <div className="feedback-session-cell" role="cell">
             {entry.sessionId ? <button className="feedback-session-button" onClick={() => onOpenSession(entry.sessionId!)}>Open session <ChevronRight size={15} aria-hidden="true" /></button> : <span className="feedback-session-expired">Expired</span>}
           </div>
         </article>)}
-      </div> : <PageStatus compact title="No feedback yet" copy="Player responses will appear here after the updated Roblox scripts are published." />}
+      </div> : <PageStatus compact title={category === 'all' ? 'No feedback yet' : 'No matching feedback'} copy={category === 'all' ? 'Player responses will appear here after the updated Roblox scripts are published.' : 'No responses match this AI category. Try a broader filter.'} />}
       {resource.data && (pagination.page > 1 || resource.data.nextCursor) && <Pagination page={pagination.page} hasNext={Boolean(resource.data.nextCursor)} loading={resource.loading} onPrevious={() => setPagination((current) => ({ ...current, page: Math.max(1, current.page - 1) }))} onNext={nextPage} label="Feedback pages" />}
     </section>
   </div>
@@ -1273,6 +1301,7 @@ function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId,
   const [timeRangeValue, setTimeRangeValue] = useState('24')
   const [severity, setSeverity] = useState('all')
   const [side, setSide] = useState('all')
+  const [classification, setClassification] = useState('all')
   const [page, setPage] = useState(1)
   const [pageCursors, setPageCursors] = useState<Array<string | null>>([null])
   const range = useMemo(() => timeRange(Number(timeRangeValue)), [timeRangeValue])
@@ -1280,6 +1309,7 @@ function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId,
     ...range,
     severity: severity === 'all' ? 'error,warning' : severity,
     side: side === 'all' ? undefined : side,
+    classification: classification === 'all' ? undefined : classification,
     sort: 'recent',
     limit: 25,
   })
@@ -1324,14 +1354,15 @@ function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId,
         <div className="compact-search"><label htmlFor="log-search">Filter loaded groups</label><div><Search size={18} /><input id="log-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Message or source" />{query && <button aria-label="Clear group filter" onClick={() => setQuery('')}><X size={16} /></button>}</div></div>
         <LabeledSelect label="Time range" value={timeRangeValue} onChange={setTimeRangeValue} options={[['8', 'Last 8 hours'], ['24', 'Last 24 hours'], ['72', 'Last 3 days']]} />
         <LabeledSelect label="Severity" value={severity} onChange={setSeverity} options={[['all', 'All'], ['error', 'Error'], ['warning', 'Warning']]} />
+        <LabeledSelect label="AI priority" value={classification} onChange={setClassification} options={ERROR_CLASSIFICATION_OPTIONS} />
         <LabeledSelect label="Log source" value={side} onChange={setSide} options={[['all', 'All'], ['client', 'Client'], ['server', 'Server']]} />
       </div>
       <div className="log-summary" aria-live="polite"><strong>{exactNumberFormatter.format(filtered.length)}</strong> grouped events on page {page} <span>·</span> <b title={`${exactNumberFormatter.format(occurrenceCount)} occurrences`} aria-label={exactNumberFormatter.format(occurrenceCount)}>{formatCount(occurrenceCount)}</b> occurrences represented</div>
       {groupsResource.error && <InlineError error={groupsResource.error} retry={groupsResource.reload} />}
       {groupsResource.loading && !groupsResource.data ? <RowsLoading /> : filtered.length ? <div className="error-table">
-        <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>Type</span><span>Last seen</span><span>Message</span></div>
-        {filtered.map((group) => <button className="error-grid" onClick={() => onOpenError(group.fingerprint)} key={group.fingerprint} aria-label={`Open grouped event. ${exactNumberFormatter.format(group.count)} occurrences. Severity ${group.severity}. Type ${group.side}. Message: ${group.title}.`}><strong className="event-count" title={`${exactNumberFormatter.format(group.count)} occurrences`}>{formatCount(group.count)}</strong><SeverityBadge level={group.severity} /><span className="secondary">{labelSide(group.side)}</span><time className="secondary first-seen">{formatDate(group.lastSeenAt)}</time><span className={`event-message ${group.severity}`}><strong>{group.title}</strong><code>{group.source ?? 'Unknown source'}</code></span></button>)}
-      </div> : !groupsResource.error ? <PageStatus compact title="No grouped events match" copy="Try a broader text, time, severity, or source filter." /> : null}
+        <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>AI priority</span><span>Type</span><span>Last seen</span><span>Message</span></div>
+        {filtered.map((group) => <button className="error-grid" onClick={() => onOpenError(group.fingerprint)} key={group.fingerprint} aria-label={`Open grouped event. ${exactNumberFormatter.format(group.count)} occurrences. Severity ${group.severity}. AI priority ${labelErrorClassification(group.classification.category, group.classification.status)}. Type ${group.side}. Message: ${group.title}.`}><strong className="event-count" title={`${exactNumberFormatter.format(group.count)} occurrences`}>{formatCount(group.count)}</strong><SeverityBadge level={group.severity} /><ClassificationBadge kind="error" classification={group.classification} /><span className="secondary">{labelSide(group.side)}</span><time className="secondary first-seen">{formatDate(group.lastSeenAt)}</time><span className={`event-message ${group.severity}`}><strong>{group.title}</strong><code>{group.source ?? 'Unknown source'}</code></span></button>)}
+      </div> : !groupsResource.error ? <PageStatus compact title="No grouped events match" copy="Try a broader text, time, severity, AI priority, or source filter." /> : null}
       {(page > 1 || nextCursor) && <Pagination page={page} hasNext={Boolean(nextCursor)} loading={groupsResource.loading} onPrevious={previousPage} onNext={nextPage} label="Grouped logs pages" />}
     </>
   )
@@ -1447,7 +1478,7 @@ function ErrorCodeBlock({ error, occurrence }: { error: GroupedError; occurrence
   return (
     <section className={`error-console ${error.severity}`} aria-labelledby="error-detail-title">
       <header>
-        <div><CircleAlert size={16} aria-hidden="true" /><strong>{labelSeverity(error.severity)}</strong><span>{labelSide(error.side)}</span></div>
+        <div><CircleAlert size={16} aria-hidden="true" /><strong>{labelSeverity(error.severity)}</strong><span>{labelSide(error.side)}</span><ClassificationBadge kind="error" classification={error.classification} /></div>
         <time dateTime={occurrence.occurredAt}>Latest · {formatDate(occurrence.occurredAt)}</time>
       </header>
       <div className="error-console-body">
@@ -1616,6 +1647,20 @@ function SeverityBadge({ level }: { level: Severity }) {
   return <span className={`severity-badge ${level}`}>{labelSeverity(level)}</span>
 }
 
+function ClassificationBadge(props:
+  | { kind: 'error'; classification: AIClassification<ErrorAICategory> }
+  | { kind: 'feedback'; classification: AIClassification<FeedbackAICategory> }
+) {
+  const classification = props.classification
+  const label = props.kind === 'error'
+    ? labelErrorClassification(props.classification.category, props.classification.status)
+    : labelFeedbackClassification(props.classification.category, props.classification.status)
+  const categoryClass = classification.category?.replaceAll('_', '-') ?? classification.status
+  const confidence = classification.confidence === null ? '' : ` · ${Math.round(classification.confidence * 100)}% confidence`
+  const title = classification.reason ? `${classification.reason}${confidence}` : label
+  return <span className={`classification-badge ${props.kind} ${categoryClass}`} title={title}>{label}</span>
+}
+
 function LabeledSelect({ label, value, onChange, options, compact, icon }: { label: string; value: string; onChange: (value: string) => void; options: Array<string | [string, string]>; compact?: boolean; icon?: React.ReactNode }) {
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -1702,6 +1747,27 @@ function labelSeverity(value: Severity) {
 
 function labelSide(value: LogSide) {
   return value === 'client' ? 'Client' : 'Server'
+}
+
+function labelErrorClassification(category: ErrorAICategory | null, status: string) {
+  if (!category) return status === 'failed' ? 'Needs review' : 'Analyzing'
+  return {
+    critical: 'Critical',
+    high: 'High',
+    medium: 'Medium',
+    low: 'Low',
+    not_a_bug: 'Not a bug',
+  }[category]
+}
+
+function labelFeedbackClassification(category: FeedbackAICategory | null, status: string) {
+  if (!category) return status === 'failed' ? 'Needs review' : 'Analyzing'
+  return {
+    bug_report: 'Bug report',
+    critique: 'Critique',
+    suggestion: 'Suggestion',
+    general: 'General',
+  }[category]
 }
 
 function formatCount(value: number) {

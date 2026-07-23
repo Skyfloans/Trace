@@ -58,6 +58,29 @@ Roblox users as administrators, members, or viewers. Ingestion keys are stored
 only as SHA-256 hashes and the plaintext value is returned once on creation or
 rotation.
 
+## AI classification
+
+Trace classifies normalized display-level errors and individual feedback in a
+background queue. OpenRouter is never called inside an ingestion transaction.
+Repeated occurrences and raw message variants therefore reuse the one
+classification attached to their normalized display group.
+
+Configure the API service with:
+
+```text
+OPENROUTER_API_KEY=...
+OPENROUTER_MODEL=openai/gpt-5.4-nano
+AI_CLASSIFICATION_BATCH_SIZE=32
+AI_CLASSIFICATION_CONCURRENCY=3
+```
+
+The error rubric is explicitly Roblox/Luau-aware. It receives normalized
+message, severity, client/server side, and source script, but no player identity
+or project name. New error/warning groups and feedback are prioritized over the
+historical queue. Apply migrations 019 and 020 before deploying the worker,
+then run `api/scripts/enqueue-ai-classification-backfill.mjs` to enqueue active
+three-day error/warning groups and retained feedback.
+
 ## Endpoint
 
 `POST /v1/batches`

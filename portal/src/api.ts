@@ -1,5 +1,24 @@
 export type Severity = 'trace' | 'info' | 'warning' | 'error'
 export type LogSide = 'client' | 'server'
+export type ClassificationStatus = 'pending' | 'classified' | 'failed'
+export type ErrorAICategory =
+  | 'critical'
+  | 'high'
+  | 'medium'
+  | 'low'
+  | 'not_a_bug'
+export type FeedbackAICategory =
+  | 'bug_report'
+  | 'critique'
+  | 'suggestion'
+  | 'general'
+
+export type AIClassification<TCategory extends string> = {
+  category: TCategory | null
+  confidence: number | null
+  reason: string | null
+  status: ClassificationStatus
+}
 
 export type Project = {
   id: string
@@ -133,6 +152,7 @@ export type GroupedErrorSummary = {
   count: number
   firstSeenAt: string
   lastSeenAt: string
+  classification: AIClassification<ErrorAICategory>
 }
 
 export type GroupedError = GroupedErrorSummary & {
@@ -167,6 +187,7 @@ export type FeedbackEntry = {
   sessionId: string | null
   player: PlayerSummary
   device: string | null
+  classification: AIClassification<FeedbackAICategory>
 }
 
 export type CursorPage<T> = {

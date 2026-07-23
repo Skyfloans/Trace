@@ -628,7 +628,7 @@ async function insertEvents(
      ), display_live_rollups AS (
        INSERT INTO display_error_rollups_hourly (
          project_id, display_group_id, bucket_at, event_count,
-         first_seen_at, last_seen_at, level, source
+         first_seen_at, last_seen_at, level, source, ai_category
        )
        SELECT
          $1,
@@ -641,7 +641,8 @@ async function insertEvents(
          MIN(inserted.occurred_at),
          MAX(COALESCE(inserted.last_occurred_at, inserted.occurred_at)),
          display_rollup_group.level,
-         display_rollup_group.source
+         display_rollup_group.source,
+         display_rollup_group.ai_category
        FROM inserted
        JOIN input
          ON input.id = inserted.id
@@ -652,6 +653,7 @@ async function insertEvents(
          input.display_group_id,
          display_rollup_group.level,
          display_rollup_group.source,
+         display_rollup_group.ai_category,
          3
        ON CONFLICT (project_id, display_group_id, bucket_at) DO UPDATE
        SET event_count = display_error_rollups_hourly.event_count + EXCLUDED.event_count,
@@ -664,7 +666,8 @@ async function insertEvents(
              EXCLUDED.last_seen_at
            ),
            level = EXCLUDED.level,
-           source = EXCLUDED.source
+           source = EXCLUDED.source,
+           ai_category = EXCLUDED.ai_category
        RETURNING display_group_id
      ), display_variants AS (
        INSERT INTO display_error_variants_hourly (
