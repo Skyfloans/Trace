@@ -28,6 +28,8 @@ test("online backfill verifies totals before enabling display reads", async () =
   assert.match(script, /validated: true, rolledBack: true/);
   assert.match(script, /display_error_group_members/);
   assert.match(script, /pg_advisory_xact_lock/);
+  assert.match(script, /CURSOR WITH HOLD/);
+  assert.match(script, /display_group_id = target\.display_group_id/);
   assert.match(script, /DELETE FROM display_error_rollups_hourly/);
   assert.match(script, /exact_event_count/);
   assert.match(script, /display_event_count/);

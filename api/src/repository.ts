@@ -362,8 +362,8 @@ async function insertEvents(
   );
 
   // Different Roblox servers frequently report the same group set and hour.
-  // Acquire every exact-group and display-hour lock in one deterministic order
-  // so ingestion and the online read-model backfill cannot lose increments.
+  // Lock each exact group and display-group/hour pair in deterministic order so
+  // the online backfill cannot lose increments without serializing a project.
   await client.query(
     `SELECT pg_advisory_xact_lock(locks.lock_key)
      FROM (
@@ -378,17 +378,23 @@ async function insertEvents(
          to_char(
            date_trunc('hour', event.occurred_at AT TIME ZONE 'UTC'),
            'YYYY-MM-DD"T"HH24'
-         ),
+         ) || ':' || event.display_fingerprint,
          0
        ) AS lock_key
-       FROM jsonb_to_recordset($3::jsonb) AS event(occurred_at timestamptz)
+       FROM jsonb_to_recordset($3::jsonb) AS event(
+         occurred_at timestamptz,
+         display_fingerprint text
+       )
      ) locks
      ORDER BY locks.lock_key`,
     [
       projectId,
       groupInputJson,
       JSON.stringify(
-        normalizedEvents.map(({ event }) => ({ occurred_at: event.occurredAt })),
+        normalizedEvents.map(({ event, normalized }) => ({
+          occurred_at: event.occurredAt,
+          display_fingerprint: normalized.displayFingerprint,
+        })),
       ),
     ],
   );

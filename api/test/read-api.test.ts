@@ -19,6 +19,7 @@ import { getGameMetadata } from "../src/read/roblox.js";
 
 test("ingestion updates raw occurrences and live hourly totals atomically", async () => {
   let occurrenceSql = "";
+  let lockSql = "";
   let released = false;
   const client = {
     query: async (sql: string, values?: unknown[]) => {
@@ -35,6 +36,7 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
         };
       }
       if (sql.includes("SELECT pg_advisory_xact_lock(locks.lock_key)")) {
+        lockSql = sql;
         return { rows: [], rowCount: 1 };
       }
       if (sql.includes("INSERT INTO error_groups")) {
@@ -98,6 +100,10 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
   );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM live_rollups/);
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_live_rollups/);
+  assert.match(
+    lockSql,
+    /event\.display_fingerprint/,
+  );
   assert.equal(released, true);
 });
 
