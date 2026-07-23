@@ -361,43 +361,54 @@ async function insertEvents(
     })),
   );
 
-  // Different Roblox servers frequently report the same group set and hour.
-  // Lock each exact group and display-group/hour pair in deterministic order so
-  // the online backfill cannot lose increments without serializing a project.
-  await client.query(
-    `SELECT pg_advisory_xact_lock(locks.lock_key)
-     FROM (
-       SELECT hashtextextended(
-         $1::text || ':' || input.fingerprint,
-         0
-       ) AS lock_key
-       FROM jsonb_to_recordset($2::jsonb) AS input(fingerprint text)
-       UNION
-       SELECT hashtextextended(
-         'display-rollup:' || $1::text || ':' ||
-         to_char(
-           date_trunc('hour', event.occurred_at AT TIME ZONE 'UTC'),
-           'YYYY-MM-DD"T"HH24'
-         ) || ':' || event.display_fingerprint,
-         0
-       ) AS lock_key
-       FROM jsonb_to_recordset($3::jsonb) AS event(
-         occurred_at timestamptz,
-         display_fingerprint text
-       )
-     ) locks
-     ORDER BY locks.lock_key`,
-    [
-      projectId,
-      groupInputJson,
-      JSON.stringify(
-        normalizedEvents.map(({ event, normalized }) => ({
-          occurred_at: event.occurredAt,
-          display_fingerprint: normalized.displayFingerprint,
-        })),
-      ),
-    ],
+  const displayReadModelState = await client.query<{ ready: boolean }>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM trace_read_model_state
+       WHERE key = 'display_error_read_model_v1'
+     ) AS ready`,
   );
+
+  // These locks protect the one-time online display-model backfill. Once its
+  // verifier has marked the model ready, normal ON CONFLICT increments are
+  // atomic and the locks would only serialize unrelated Roblox servers that
+  // happen to report the same normalized error.
+  if (displayReadModelState.rows[0]?.ready !== true) {
+    await client.query(
+      `SELECT pg_advisory_xact_lock(locks.lock_key)
+       FROM (
+         SELECT hashtextextended(
+           $1::text || ':' || input.fingerprint,
+           0
+         ) AS lock_key
+         FROM jsonb_to_recordset($2::jsonb) AS input(fingerprint text)
+         UNION
+         SELECT hashtextextended(
+           'display-rollup:' || $1::text || ':' ||
+           to_char(
+             date_trunc('hour', event.occurred_at AT TIME ZONE 'UTC'),
+             'YYYY-MM-DD"T"HH24'
+           ) || ':' || event.display_fingerprint,
+           0
+         ) AS lock_key
+         FROM jsonb_to_recordset($3::jsonb) AS event(
+           occurred_at timestamptz,
+           display_fingerprint text
+         )
+       ) locks
+       ORDER BY locks.lock_key`,
+      [
+        projectId,
+        groupInputJson,
+        JSON.stringify(
+          normalizedEvents.map(({ event, normalized }) => ({
+            occurred_at: event.occurredAt,
+            display_fingerprint: normalized.displayFingerprint,
+          })),
+        ),
+      ],
+    );
+  }
 
   const groupResult = await client.query<{
     id: string;

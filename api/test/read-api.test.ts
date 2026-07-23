@@ -35,6 +35,9 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
           rowCount: 1,
         };
       }
+      if (sql.includes("display_error_read_model_v1")) {
+        return { rows: [{ ready: false }], rowCount: 1 };
+      }
       if (sql.includes("SELECT pg_advisory_xact_lock(locks.lock_key)")) {
         lockSql = sql;
         return { rows: [], rowCount: 1 };
@@ -126,6 +129,78 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
     /event\.display_fingerprint/,
   );
   assert.equal(released, true);
+});
+
+test("verified display reads do not serialize ingestion on normalized groups", async () => {
+  let groupLockAttempted = false;
+  const client = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("hashtextextended('trace-job:")) {
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("WITH project_update AS")) {
+        return {
+          rows: [{ id: "30000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("display_error_read_model_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT pg_advisory_xact_lock(locks.lock_key)")) {
+        groupLockAttempted = true;
+        return { rows: [], rowCount: 1 };
+      }
+      if (sql.includes("INSERT INTO error_groups")) {
+        const groups = JSON.parse(String(values?.[1])) as Array<{ fingerprint: string }>;
+        return {
+          rows: [{
+            id: "40000000-0000-4000-8000-000000000001",
+            fingerprint: groups[0].fingerprint,
+            display_group_id: "70000000-0000-4000-8000-000000000001",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("INSERT INTO occurrences")) {
+        return { rows: [{ accepted: 1 }], rowCount: 1 };
+      }
+      throw new Error(`Unexpected transaction query: ${sql}`);
+    },
+    release: () => {},
+  };
+  const pool = { connect: async () => client } as unknown as Pool;
+  const batch = ingestBatchSchema.parse({
+    version: 1,
+    batchId: "50000000-0000-4000-8000-000000000002",
+    job: {
+      id: "30000000-0000-4000-8000-000000000001",
+      robloxJobId: "roblox-job",
+      placeId: "1",
+      universeId: "2",
+      startedAt: "2026-07-20T10:00:00.000Z",
+      lastSeenAt: "2026-07-20T10:01:00.000Z",
+    },
+    sessions: [],
+    events: [{
+      id: "60000000-0000-4000-8000-000000000002",
+      occurredAt: "2026-07-20T10:00:30.000Z",
+      repeatCount: 1,
+      source: "server",
+      level: "warning",
+      message: "DataStore request entered the queue",
+    }],
+    feedback: [],
+  });
+
+  assert.deepEqual(
+    await ingestBatch(pool, "20000000-0000-4000-8000-000000000001", batch),
+    { accepted: 1, duplicates: 0 },
+  );
+  assert.equal(groupLockAttempted, false);
 });
 
 test("Roblox games with bracketed update tags remain linkable", async (t) => {
