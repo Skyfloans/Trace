@@ -576,12 +576,12 @@ export async function registerSessionAndLogRoutes(
       const timelineConditions: string[] = [];
       if (severities) {
         timelineConditions.push(
-          `eg.level = ANY(${parameters.addArray(severities)}::log_level[])`,
+          `severity = ANY(${parameters.addArray(severities)}::log_level[])`,
         );
       }
       if (sides) {
         timelineConditions.push(
-          `eg.source = ANY(${parameters.addArray(sides)}::log_source[])`,
+          `side = ANY(${parameters.addArray(sides)}::log_source[])`,
         );
       }
 
@@ -664,38 +664,36 @@ export async function registerSessionAndLogRoutes(
            FROM sessions
            WHERE project_id = ${project} AND id = ${session}
          ),
-         timeline_ids AS (
+         timeline AS (
            SELECT
-             o.id, o.occurred_at, NULL::uuid AS related_occurrence_id,
+             ${occurrenceSelect},
+             NULL::uuid AS related_occurrence_id,
              NULL::double precision AS delta_ms
            FROM occurrences o
            JOIN target_session ts
              ON ts.id = o.session_id
             AND o.project_id = ${project}
+           JOIN error_groups eg ON eg.id = o.group_id
+           LEFT JOIN sessions s ON s.id = o.session_id
            UNION ALL
            SELECT
-             server_event.id,
-             server_event.occurred_at,
+             ${occurrenceSelect},
              NULL::uuid AS related_occurrence_id,
              NULL::double precision AS delta_ms
            FROM target_session ts
-           JOIN occurrences server_event
-             ON server_event.project_id = ${project}
-            AND server_event.job_id = ts.job_id
-            AND server_event.session_id IS DISTINCT FROM ts.id
-            AND server_event.occurred_at BETWEEN ts.started_at AND ts.ended_at
-           JOIN error_groups server_group
-             ON server_group.id = server_event.group_id
-            AND server_group.source = 'server'
+           JOIN occurrences o
+             ON o.project_id = ${project}
+            AND o.job_id = ts.job_id
+            AND o.session_id IS DISTINCT FROM ts.id
+            AND o.occurred_at BETWEEN ts.started_at AND ts.ended_at
+           JOIN error_groups eg
+             ON eg.id = o.group_id
+            AND eg.source = 'server'
+           LEFT JOIN sessions s ON s.id = o.session_id
          ),
          filtered AS (
-           SELECT timeline_ids.*, eg.source
-           FROM timeline_ids
-           JOIN occurrences o
-             ON o.id = timeline_ids.id
-            AND o.occurred_at = timeline_ids.occurred_at
-            AND o.project_id = ${project}
-           JOIN error_groups eg ON eg.id = o.group_id
+           SELECT *
+           FROM timeline
            ${timelineConditions.length ? `WHERE ${timelineConditions.join(" AND ")}` : ""}
          ),
          ${selection},
@@ -704,7 +702,7 @@ export async function registerSessionAndLogRoutes(
            ${includeAllServer ? `UNION ALL
            SELECT server_events.*
            FROM filtered server_events
-           WHERE server_events.source = 'server'
+           WHERE server_events.side = 'server'
              AND NOT EXISTS (
                SELECT 1
                FROM selected
@@ -712,18 +710,9 @@ export async function registerSessionAndLogRoutes(
                  AND selected.occurred_at = server_events.occurred_at
              )` : ""}
          )
-         SELECT
-           ${occurrenceSelect},
-           displayed.related_occurrence_id,
-           displayed.delta_ms
+         SELECT *
          FROM displayed
-         JOIN occurrences o
-           ON o.id = displayed.id
-          AND o.occurred_at = displayed.occurred_at
-          AND o.project_id = ${project}
-         JOIN error_groups eg ON eg.id = o.group_id
-         LEFT JOIN sessions s ON s.id = o.session_id
-         ORDER BY o.occurred_at, o.id`,
+         ORDER BY displayed.occurred_at, displayed.id`,
         parameters.values,
       );
 

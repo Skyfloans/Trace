@@ -1,6 +1,9 @@
 import pg from "pg";
 
 const hoursPerBatch = Number(process.env.DISPLAY_IMPACT_BATCH_HOURS ?? 1);
+const requestedStart = process.env.DISPLAY_IMPACT_START_AT
+  ? new Date(process.env.DISPLAY_IMPACT_START_AT)
+  : null;
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 
@@ -17,6 +20,12 @@ try {
   `);
   let cursor = new Date(bounds.rows[0].first_bucket);
   const finishedAt = new Date(bounds.rows[0].finished_at);
+  if (requestedStart) {
+    if (Number.isNaN(requestedStart.getTime())) {
+      throw new Error("DISPLAY_IMPACT_START_AT must be an ISO timestamp");
+    }
+    cursor = new Date(Math.max(cursor.getTime(), requestedStart.getTime()));
+  }
   let playerRows = 0;
   let jobRows = 0;
 
@@ -25,64 +34,76 @@ try {
       cursor.getTime() + hoursPerBatch * 60 * 60 * 1_000,
       finishedAt.getTime(),
     ));
-    await client.query("BEGIN");
-    try {
-      const players = await client.query(`
-        INSERT INTO display_error_group_players (
-          project_id, display_group_id, player_id, last_seen_at
-        )
-        SELECT
-          occurrences.project_id,
-          members.display_group_id,
-          sessions.player_id,
-          MAX(occurrences.occurred_at)
-        FROM occurrences
-        JOIN display_error_group_members members
-          ON members.exact_group_id = occurrences.group_id
-        JOIN sessions ON sessions.id = occurrences.session_id
-        WHERE occurrences.occurred_at >= $1
-          AND occurrences.occurred_at < $2
-          AND sessions.player_id IS NOT NULL
-        GROUP BY
-          occurrences.project_id,
-          members.display_group_id,
-          sessions.player_id
-        ON CONFLICT (project_id, display_group_id, player_id) DO UPDATE
-        SET last_seen_at = GREATEST(
-          display_error_group_players.last_seen_at,
-          EXCLUDED.last_seen_at
-        )
-      `, [cursor, next]);
-      const jobs = await client.query(`
-        INSERT INTO display_error_group_jobs (
-          project_id, display_group_id, job_id, last_seen_at
-        )
-        SELECT
-          occurrences.project_id,
-          members.display_group_id,
-          occurrences.job_id,
-          MAX(occurrences.occurred_at)
-        FROM occurrences
-        JOIN display_error_group_members members
-          ON members.exact_group_id = occurrences.group_id
-        WHERE occurrences.occurred_at >= $1
-          AND occurrences.occurred_at < $2
-        GROUP BY
-          occurrences.project_id,
-          members.display_group_id,
-          occurrences.job_id
-        ON CONFLICT (project_id, display_group_id, job_id) DO UPDATE
-        SET last_seen_at = GREATEST(
-          display_error_group_jobs.last_seen_at,
-          EXCLUDED.last_seen_at
-        )
-      `, [cursor, next]);
-      await client.query("COMMIT");
-      playerRows += Number(players.rowCount ?? 0);
-      jobRows += Number(jobs.rowCount ?? 0);
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      await client.query("BEGIN");
+      try {
+        const players = await client.query(`
+          INSERT INTO display_error_group_players (
+            project_id, display_group_id, player_id, last_seen_at
+          )
+          SELECT
+            occurrences.project_id,
+            members.display_group_id,
+            sessions.player_id,
+            MAX(occurrences.occurred_at)
+          FROM occurrences
+          JOIN display_error_group_members members
+            ON members.exact_group_id = occurrences.group_id
+          JOIN sessions ON sessions.id = occurrences.session_id
+          WHERE occurrences.occurred_at >= $1
+            AND occurrences.occurred_at < $2
+            AND sessions.player_id IS NOT NULL
+          GROUP BY
+            occurrences.project_id,
+            members.display_group_id,
+            sessions.player_id
+          ORDER BY
+            occurrences.project_id,
+            members.display_group_id,
+            sessions.player_id
+          ON CONFLICT (project_id, display_group_id, player_id) DO UPDATE
+          SET last_seen_at = GREATEST(
+            display_error_group_players.last_seen_at,
+            EXCLUDED.last_seen_at
+          )
+        `, [cursor, next]);
+        const jobs = await client.query(`
+          INSERT INTO display_error_group_jobs (
+            project_id, display_group_id, job_id, last_seen_at
+          )
+          SELECT
+            occurrences.project_id,
+            members.display_group_id,
+            occurrences.job_id,
+            MAX(occurrences.occurred_at)
+          FROM occurrences
+          JOIN display_error_group_members members
+            ON members.exact_group_id = occurrences.group_id
+          WHERE occurrences.occurred_at >= $1
+            AND occurrences.occurred_at < $2
+          GROUP BY
+            occurrences.project_id,
+            members.display_group_id,
+            occurrences.job_id
+          ORDER BY
+            occurrences.project_id,
+            members.display_group_id,
+            occurrences.job_id
+          ON CONFLICT (project_id, display_group_id, job_id) DO UPDATE
+          SET last_seen_at = GREATEST(
+            display_error_group_jobs.last_seen_at,
+            EXCLUDED.last_seen_at
+          )
+        `, [cursor, next]);
+        await client.query("COMMIT");
+        playerRows += Number(players.rowCount ?? 0);
+        jobRows += Number(jobs.rowCount ?? 0);
+        break;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        if (error?.code !== "40P01" || attempt === 5) throw error;
+        await new Promise((resolve) => setTimeout(resolve, attempt * 250));
+      }
     }
     console.log(JSON.stringify({
       from: cursor.toISOString(),

@@ -559,10 +559,9 @@ export async function registerProjectAndErrorRoutes(
          ),
          edge_bounds AS (
            SELECT
-             now() - interval '3 days' AS cutoff,
              date_trunc('hour', now() - interval '3 days') + interval '1 hour'
                AS complete_from,
-             date_trunc('hour', now()) AS complete_to
+             date_trunc('hour', now()) AS current_bucket
          ),
          counts AS (
            SELECT
@@ -572,31 +571,10 @@ export async function registerProjectAndErrorRoutes(
            FROM requested_group
            CROSS JOIN edge_bounds
            JOIN display_error_rollups_hourly rollups
-             ON rollups.project_id = $1
+            ON rollups.project_id = $1
             AND rollups.display_group_id = requested_group.id
             AND rollups.bucket_at >= edge_bounds.complete_from
-            AND rollups.bucket_at < edge_bounds.complete_to
-           UNION ALL
-           SELECT
-             SUM(occurrences.repeat_count)::bigint,
-             MIN(occurrences.occurred_at),
-             MAX(COALESCE(
-               occurrences.last_occurred_at,
-               occurrences.occurred_at
-             ))
-           FROM requested_group
-           CROSS JOIN edge_bounds
-           JOIN display_error_group_members members
-             ON members.display_group_id = requested_group.id
-           JOIN occurrences
-             ON occurrences.project_id = $1
-            AND occurrences.group_id = members.exact_group_id
-            AND occurrences.occurred_at >= edge_bounds.cutoff
-            AND (
-              occurrences.occurred_at < edge_bounds.complete_from
-              OR occurrences.occurred_at >= edge_bounds.complete_to
-            )
-           HAVING COUNT(*) > 0
+            AND rollups.bucket_at <= edge_bounds.current_bucket
          ),
          stats AS (
            SELECT

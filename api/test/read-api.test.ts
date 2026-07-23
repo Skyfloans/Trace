@@ -404,11 +404,11 @@ test("session timelines include every server event across the full session", asy
   assert.match(timelineSql, /COALESCE\(ended_at, now\(\)\)/);
   assert.doesNotMatch(timelineSql, /LEFT JOIN LATERAL/);
   assert.match(timelineSql, /o\.project_id = \$1/);
-  assert.match(timelineSql, /server_event\.project_id = \$1/);
-  assert.match(timelineSql, /server_event\.session_id IS DISTINCT FROM ts\.id/);
-  assert.match(timelineSql, /server_group\.source = 'server'/);
+  assert.match(timelineSql, /o\.session_id IS DISTINCT FROM ts\.id/);
+  assert.match(timelineSql, /eg\.source = 'server'/);
   assert.match(timelineSql, /UNION ALL/);
   assert.match(timelineSql, /NOT EXISTS/);
+  assert.doesNotMatch(timelineSql, /FROM displayed\s+JOIN occurrences/);
   await app.close();
 });
 
@@ -1051,7 +1051,8 @@ test("error detail uses rollups and compact impact sets when verified", async ()
   assert.match(detailSql, /JOIN display_error_rollups_hourly/);
   assert.match(detailSql, /FROM display_error_group_players/);
   assert.match(detailSql, /FROM display_error_group_jobs/);
-  assert.match(detailSql, /OR occurrences\.occurred_at >= edge_bounds\.complete_to/);
+  assert.match(detailSql, /rollups\.bucket_at <= edge_bounds\.current_bucket/);
+  assert.doesNotMatch(detailSql, /SUM\(occurrences\.repeat_count\)/);
   assert.doesNotMatch(detailSql, /WITH matching AS/);
   assert.doesNotMatch(detailSql, /COUNT\(DISTINCT/);
   await app.close();

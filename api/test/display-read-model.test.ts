@@ -124,6 +124,9 @@ test("display error impacts preserve exact data and bound distinct-count work", 
   assert.doesNotMatch(migration, /DELETE FROM occurrences|UPDATE occurrences/);
 
   assert.match(script, /DISPLAY_IMPACT_BATCH_HOURS/);
+  assert.match(script, /DISPLAY_IMPACT_START_AT/);
+  assert.match(script, /error\?\.code !== "40P01"/);
+  assert.match(script, /ORDER BY[\s\S]+members\.display_group_id/);
   assert.match(script, /ON CONFLICT \(project_id, display_group_id, player_id\)/);
   assert.match(script, /ON CONFLICT \(project_id, display_group_id, job_id\)/);
   assert.match(script, /missing_players/);
