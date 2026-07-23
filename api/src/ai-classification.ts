@@ -521,7 +521,7 @@ export function startAIClassificationWorker(
             );
             if (!controller.signal.aborted) {
               logger.warn(
-                { error, target, count: targetJobs.length },
+                { err: error, target, count: targetJobs.length },
                 "AI classification batch failed",
               );
             }

@@ -201,7 +201,10 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
 
   assert.match(migration, /ALTER TABLE display_error_groups/);
   assert.match(migration, /ALTER TABLE feedback/);
-  assert.match(migration, /CREATE TABLE ai_classification_jobs/);
+  assert.match(
+    migration,
+    /CREATE TABLE (?:IF NOT EXISTS )?ai_classification_jobs/,
+  );
   assert.match(migration, /AFTER INSERT ON display_error_groups/);
   assert.match(migration, /AFTER INSERT ON feedback/);
   assert.doesNotMatch(migration, /ALTER TABLE occurrences|DELETE FROM occurrences/);

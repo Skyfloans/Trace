@@ -7,6 +7,12 @@ import { startAIClassificationWorker } from "./ai-classification.js";
 
 const ingestionPool = createPool(config.DATABASE_URL, 16);
 const readPool = createPool(config.DATABASE_URL, 8);
+const classificationPool = config.OPENROUTER_API_KEY
+  ? createPool(
+      config.DATABASE_URL,
+      Math.max(2, config.AI_CLASSIFICATION_CONCURRENCY + 1),
+    )
+  : null;
 const oauth =
   config.ROBLOX_OAUTH_CLIENT_ID &&
   config.ROBLOX_OAUTH_CLIENT_SECRET &&
@@ -63,7 +69,11 @@ app.addHook("onClose", async () => {
   }
   await stopClassificationWorkers?.();
   archiveStorage?.close();
-  await Promise.all([ingestionPool.end(), readPool.end()]);
+  await Promise.all([
+    ingestionPool.end(),
+    readPool.end(),
+    classificationPool?.end(),
+  ]);
 });
 
 try {
@@ -88,11 +98,11 @@ try {
 
   await app.listen({ host: config.HOST, port: config.PORT });
 
-  if (config.OPENROUTER_API_KEY) {
+  if (config.OPENROUTER_API_KEY && classificationPool) {
     const workers = Array.from(
       { length: config.AI_CLASSIFICATION_CONCURRENCY },
       () => startAIClassificationWorker({
-        pool: ingestionPool,
+        pool: classificationPool,
         apiKey: config.OPENROUTER_API_KEY!,
         model: config.OPENROUTER_MODEL,
         webOrigin: config.WEB_ORIGIN,
