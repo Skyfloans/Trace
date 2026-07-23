@@ -45,6 +45,9 @@ async function runMaintenance(): Promise<void> {
     await client.query(
       "SELECT purge_expired_trace_data(INTERVAL '24 hours', INTERVAL '3 days')",
     );
+    await client.query(
+      "SELECT purge_expired_display_error_impacts(INTERVAL '3 days')",
+    );
   });
 }
 

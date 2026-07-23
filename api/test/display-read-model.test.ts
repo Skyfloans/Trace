@@ -105,3 +105,31 @@ test("rollup filters are backfilled and indexed before the fast path is enabled"
       < script.indexOf("display_error_rollup_filters_v1"),
   );
 });
+
+test("display error impacts preserve exact data and bound distinct-count work", async () => {
+  const migration = await readFile(
+    new URL("../../database/migrations/016_display_error_impacts.sql", import.meta.url),
+    "utf8",
+  );
+  const script = await readFile(
+    new URL("../scripts/backfill-display-error-impacts.mjs", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS display_error_group_players/);
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS display_error_group_jobs/);
+  assert.match(migration, /PRIMARY KEY \(project_id, display_group_id, player_id\)/);
+  assert.match(migration, /PRIMARY KEY \(project_id, display_group_id, job_id\)/);
+  assert.match(migration, /purge_expired_display_error_impacts/);
+  assert.doesNotMatch(migration, /DELETE FROM occurrences|UPDATE occurrences/);
+
+  assert.match(script, /DISPLAY_IMPACT_BACKFILL_HOURS/);
+  assert.match(script, /ON CONFLICT \(project_id, display_group_id, player_id\)/);
+  assert.match(script, /ON CONFLICT \(project_id, display_group_id, job_id\)/);
+  assert.match(script, /missing_players/);
+  assert.match(script, /missing_jobs/);
+  assert.ok(
+    script.indexOf("Display impact verification failed")
+      < script.indexOf("display_error_impacts_v1"),
+  );
+});

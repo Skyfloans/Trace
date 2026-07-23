@@ -117,6 +117,45 @@ function readEventFilters(query: Record<string, unknown>) {
   };
 }
 
+function correlateServerEvents(
+  occurrences: Array<ReturnType<typeof mapOccurrence>>,
+  sessionId: string,
+) {
+  const clientOccurrences = occurrences.filter(
+    (occurrence) => occurrence.side === "client",
+  );
+  return occurrences.map((occurrence) => {
+    if (
+      occurrence.side !== "server"
+      || occurrence.sessionId === sessionId
+      || "correlation" in occurrence
+    ) {
+      return occurrence;
+    }
+    const occurredAt = Date.parse(occurrence.occurredAt);
+    const nearest = clientOccurrences
+      .map((clientOccurrence) => ({
+        occurrence: clientOccurrence,
+        deltaMs: Math.abs(
+          Date.parse(clientOccurrence.occurredAt) - occurredAt,
+        ),
+      }))
+      .filter((candidate) => candidate.deltaMs <= 2_000)
+      .sort((left, right) => left.deltaMs - right.deltaMs)[0];
+    return nearest
+      ? {
+          ...occurrence,
+          correlation: {
+            kind: "time_window" as const,
+            confidence: "low" as const,
+            relatedOccurrenceId: nearest.occurrence.id,
+            deltaMs: nearest.deltaMs,
+          },
+        }
+      : occurrence;
+  });
+}
+
 function utcDatesBetween(startedAt: unknown, endedAt: unknown): string[] {
   const cursor = new Date(String(startedAt));
   const end = new Date(String(endedAt));
@@ -620,7 +659,7 @@ export async function registerSessionAndLogRoutes(
       }
 
       const result = await pool.query(
-        `WITH target_session AS (
+        `WITH target_session AS MATERIALIZED (
            SELECT id, job_id, started_at, COALESCE(ended_at, now()) AS ended_at
            FROM sessions
            WHERE project_id = ${project} AND id = ${session}
@@ -630,13 +669,15 @@ export async function registerSessionAndLogRoutes(
              o.id, o.occurred_at, NULL::uuid AS related_occurrence_id,
              NULL::double precision AS delta_ms
            FROM occurrences o
-           JOIN target_session ts ON ts.id = o.session_id
+           JOIN target_session ts
+             ON ts.id = o.session_id
+            AND o.project_id = ${project}
            UNION ALL
            SELECT
              server_event.id,
              server_event.occurred_at,
-             nearest.id AS related_occurrence_id,
-             nearest.delta_ms
+             NULL::uuid AS related_occurrence_id,
+             NULL::double precision AS delta_ms
            FROM target_session ts
            JOIN occurrences server_event
              ON server_event.project_id = ${project}
@@ -646,23 +687,6 @@ export async function registerSessionAndLogRoutes(
            JOIN error_groups server_group
              ON server_group.id = server_event.group_id
             AND server_group.source = 'server'
-           LEFT JOIN LATERAL (
-             SELECT
-               client_event.id,
-               ABS(EXTRACT(EPOCH FROM (
-                 client_event.occurred_at - server_event.occurred_at
-               )) * 1000) AS delta_ms
-             FROM occurrences client_event
-             WHERE client_event.project_id = ${project}
-               AND client_event.session_id = ts.id
-               AND client_event.occurred_at BETWEEN
-                 server_event.occurred_at - interval '2 seconds'
-                 AND server_event.occurred_at + interval '2 seconds'
-             ORDER BY ABS(EXTRACT(EPOCH FROM (
-               client_event.occurred_at - server_event.occurred_at
-             ))), client_event.id
-             LIMIT 1
-           ) nearest ON true
          ),
          filtered AS (
            SELECT timeline_ids.*, eg.source
@@ -670,13 +694,23 @@ export async function registerSessionAndLogRoutes(
            JOIN occurrences o
              ON o.id = timeline_ids.id
             AND o.occurred_at = timeline_ids.occurred_at
+            AND o.project_id = ${project}
            JOIN error_groups eg ON eg.id = o.group_id
            ${timelineConditions.length ? `WHERE ${timelineConditions.join(" AND ")}` : ""}
          ),
          ${selection},
          displayed AS (
            SELECT * FROM selected
-           ${includeAllServer ? "UNION SELECT * FROM filtered WHERE source = 'server'" : ""}
+           ${includeAllServer ? `UNION ALL
+           SELECT server_events.*
+           FROM filtered server_events
+           WHERE server_events.source = 'server'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM selected
+               WHERE selected.id = server_events.id
+                 AND selected.occurred_at = server_events.occurred_at
+             )` : ""}
          )
          SELECT
            ${occurrenceSelect},
@@ -686,6 +720,7 @@ export async function registerSessionAndLogRoutes(
          JOIN occurrences o
            ON o.id = displayed.id
           AND o.occurred_at = displayed.occurred_at
+          AND o.project_id = ${project}
          JOIN error_groups eg ON eg.id = o.group_id
          LEFT JOIN sessions s ON s.id = o.session_id
          ORDER BY o.occurred_at, o.id`,
@@ -699,21 +734,7 @@ export async function registerSessionAndLogRoutes(
       const rows = includeAllServer
         ? result.rows
         : result.rows.slice(0, resultLimit);
-      let data = rows.map((row) => {
-        const occurrence = mapOccurrence(row);
-        if (row.related_occurrence_id) {
-          return {
-            ...occurrence,
-            correlation: {
-              kind: "time_window",
-              confidence: "low",
-              relatedOccurrenceId: row.related_occurrence_id,
-              deltaMs: Number(row.delta_ms),
-            },
-          };
-        }
-        return occurrence;
-      });
+      let data = rows.map(mapOccurrence);
       if (archiveStorage && includeAllServer) {
         const targetSession = sessionExists.rows[0]!;
         const archived = await readArchivedSessionTimeline({
@@ -733,40 +754,8 @@ export async function registerSessionAndLogRoutes(
             Date.parse(left.occurredAt) - Date.parse(right.occurredAt) ||
             left.id.localeCompare(right.id),
         );
-        const clientOccurrences = data.filter(
-          (occurrence) => occurrence.side === "client",
-        );
-        data = data.map((occurrence) => {
-          if (
-            occurrence.side !== "server" ||
-            occurrence.sessionId === sessionId ||
-            "correlation" in occurrence
-          ) {
-            return occurrence;
-          }
-          const occurredAt = Date.parse(occurrence.occurredAt);
-          const nearest = clientOccurrences
-            .map((clientOccurrence) => ({
-              occurrence: clientOccurrence,
-              deltaMs: Math.abs(
-                Date.parse(clientOccurrence.occurredAt) - occurredAt,
-              ),
-            }))
-            .filter((candidate) => candidate.deltaMs <= 2_000)
-            .sort((left, right) => left.deltaMs - right.deltaMs)[0];
-          return nearest
-            ? {
-                ...occurrence,
-                correlation: {
-                  kind: "time_window" as const,
-                  confidence: "low" as const,
-                  relatedOccurrenceId: nearest.occurrence.id,
-                  deltaMs: nearest.deltaMs,
-                },
-              }
-            : occurrence;
-        });
       }
+      data = correlateServerEvents(data, sessionId);
       const last = rows.at(-1);
       cache(reply);
       return {

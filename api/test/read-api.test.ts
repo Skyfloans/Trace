@@ -100,6 +100,16 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
   );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM live_rollups/);
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_live_rollups/);
+  assert.match(
+    occurrenceSql,
+    /display_players AS \(\s+INSERT INTO display_error_group_players/,
+  );
+  assert.match(
+    occurrenceSql,
+    /display_jobs AS \(\s+INSERT INTO display_error_group_jobs/,
+  );
+  assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_players/);
+  assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_jobs/);
   assert.match(occurrenceSql, /first_seen_at, last_seen_at, level, source/);
   assert.match(
     lockSql,
@@ -392,10 +402,99 @@ test("session timelines include every server event across the full session", asy
 
   assert.equal(response.statusCode, 200);
   assert.match(timelineSql, /COALESCE\(ended_at, now\(\)\)/);
-  assert.match(timelineSql, /LEFT JOIN LATERAL/);
+  assert.doesNotMatch(timelineSql, /LEFT JOIN LATERAL/);
+  assert.match(timelineSql, /o\.project_id = \$1/);
+  assert.match(timelineSql, /server_event\.project_id = \$1/);
   assert.match(timelineSql, /server_event\.session_id IS DISTINCT FROM ts\.id/);
   assert.match(timelineSql, /server_group\.source = 'server'/);
-  assert.match(timelineSql, /UNION SELECT \* FROM filtered WHERE source = 'server'/);
+  assert.match(timelineSql, /UNION ALL/);
+  assert.match(timelineSql, /NOT EXISTS/);
+  await app.close();
+});
+
+test("session timelines correlate nearby server events after the bounded query", async () => {
+  const projectId = "20000000-0000-4000-8000-000000000001";
+  const sessionId = "30000000-0000-4000-8000-000000000001";
+  const occurredAt = "2026-07-18T12:00:01.000Z";
+  const baseRow = {
+    project_id: projectId,
+    occurred_at: occurredAt,
+    last_occurred_at: occurredAt,
+    repeat_count: 1,
+    received_at: occurredAt,
+    level: "error",
+    normalized_message: "test",
+    source_script: null,
+    original_message: "test",
+    original_stack: null,
+    context: {},
+    job_id: "40000000-0000-4000-8000-000000000001",
+    player_id: "123",
+    player_name: "Player",
+    player_display_name: "Player",
+    avatar_url: null,
+  };
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{ id: "10000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("SELECT job_id, started_at")) {
+        return {
+          rows: [{
+            job_id: baseRow.job_id,
+            started_at: "2026-07-18T12:00:00.000Z",
+            ended_at: "2026-07-18T13:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("WITH target_session AS")) {
+        return {
+          rows: [
+            {
+              ...baseRow,
+              id: "50000000-0000-4000-8000-000000000001",
+              side: "client",
+              session_id: sessionId,
+              fingerprint: "a".repeat(64),
+            },
+            {
+              ...baseRow,
+              id: "50000000-0000-4000-8000-000000000002",
+              occurred_at: "2026-07-18T12:00:02.250Z",
+              side: "server",
+              session_id: null,
+              fingerprint: "b".repeat(64),
+            },
+          ],
+          rowCount: 2,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/projects/${projectId}/sessions/${sessionId}/timeline?includeAllServer=true`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().data[1].correlation, {
+    kind: "time_window",
+    confidence: "low",
+    relatedOccurrenceId: "50000000-0000-4000-8000-000000000001",
+    deltaMs: 1250,
+  });
   await app.close();
 });
 
@@ -872,6 +971,89 @@ test("current grouped logs use the indexed display read model", async () => {
     queries[3]!,
     /\(event_count, last_seen_at, display_group_id::text\) < \(/,
   );
+  await app.close();
+});
+
+test("error detail uses rollups and compact impact sets when verified", async () => {
+  let detailSql = "";
+  const occurredAt = "2026-07-22T11:00:00.000Z";
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{ id: "10000000-0000-4000-8000-000000000001" }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
+      }
+      if (sql.includes("display_error_read_model_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("display_error_impacts_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("WITH requested_group AS MATERIALIZED")) {
+        detailSql = sql;
+        return {
+          rows: [{
+            event_count: 102218856,
+            affected_player_count: 840,
+            affected_server_count: 532,
+            first_seen_at: "2026-07-20T00:00:00.000Z",
+            last_seen_at: occurredAt,
+            group_fingerprint: "a".repeat(64),
+            group_level: "error",
+            group_source: "client",
+            group_message: "attempt to index nil with 'Position'",
+            group_source_script: "ReplicatedStorage.Color",
+            id: "50000000-0000-4000-8000-000000000001",
+            project_id: "20000000-0000-4000-8000-000000000001",
+            occurred_at: occurredAt,
+            last_occurred_at: occurredAt,
+            repeat_count: 1,
+            received_at: occurredAt,
+            severity: "error",
+            side: "client",
+            message: "attempt to index nil with 'Position'",
+            source: "ReplicatedStorage.Color",
+            stack_trace: null,
+            fingerprint: "a".repeat(64),
+            server_job_id: "40000000-0000-4000-8000-000000000001",
+            session_id: null,
+            player_id: null,
+            player_name: null,
+            player_display_name: null,
+            avatar_url: null,
+            attributes: {},
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors/${"a".repeat(64)}`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().error.count, 102218856);
+  assert.equal(response.json().error.affectedPlayerCount, 840);
+  assert.match(detailSql, /JOIN display_error_rollups_hourly/);
+  assert.match(detailSql, /FROM display_error_group_players/);
+  assert.match(detailSql, /FROM display_error_group_jobs/);
+  assert.match(detailSql, /OR occurrences\.occurred_at >= edge_bounds\.complete_to/);
+  assert.doesNotMatch(detailSql, /WITH matching AS/);
+  assert.doesNotMatch(detailSql, /COUNT\(DISTINCT/);
   await app.close();
 });
 

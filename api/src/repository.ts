@@ -665,6 +665,48 @@ async function insertEvents(
            level = EXCLUDED.level,
            source = EXCLUDED.source
        RETURNING display_group_id
+     ), display_players AS (
+       INSERT INTO display_error_group_players (
+         project_id, display_group_id, player_id, last_seen_at
+       )
+       SELECT
+         $1,
+         input.display_group_id,
+         sessions.player_id,
+         MAX(inserted.occurred_at)
+       FROM inserted
+       JOIN input
+         ON input.id = inserted.id
+        AND input.occurred_at = inserted.occurred_at
+       JOIN sessions ON sessions.id = inserted.session_id
+       WHERE sessions.player_id IS NOT NULL
+       GROUP BY input.display_group_id, sessions.player_id
+       ON CONFLICT (project_id, display_group_id, player_id) DO UPDATE
+       SET last_seen_at = GREATEST(
+         display_error_group_players.last_seen_at,
+         EXCLUDED.last_seen_at
+       )
+       RETURNING display_group_id
+     ), display_jobs AS (
+       INSERT INTO display_error_group_jobs (
+         project_id, display_group_id, job_id, last_seen_at
+       )
+       SELECT
+         $1,
+         input.display_group_id,
+         $2,
+         MAX(inserted.occurred_at)
+       FROM inserted
+       JOIN input
+         ON input.id = inserted.id
+        AND input.occurred_at = inserted.occurred_at
+       GROUP BY input.display_group_id
+       ON CONFLICT (project_id, display_group_id, job_id) DO UPDATE
+       SET last_seen_at = GREATEST(
+         display_error_group_jobs.last_seen_at,
+         EXCLUDED.last_seen_at
+       )
+       RETURNING display_group_id
      ),
      updated AS (
        UPDATE error_groups groups
@@ -679,7 +721,9 @@ async function insertEvents(
        COALESCE(SUM(inserted.repeat_count), 0)::int AS accepted,
        (SELECT COUNT(*) FROM updated) AS updated_group_count,
        (SELECT COUNT(*) FROM live_rollups) AS updated_rollup_count,
-       (SELECT COUNT(*) FROM display_live_rollups) AS updated_display_rollup_count
+       (SELECT COUNT(*) FROM display_live_rollups) AS updated_display_rollup_count,
+       (SELECT COUNT(*) FROM display_players) AS updated_display_player_count,
+       (SELECT COUNT(*) FROM display_jobs) AS updated_display_job_count
      FROM inserted`,
     [projectId, jobId, JSON.stringify(occurrences)],
   );

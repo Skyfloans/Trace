@@ -15,6 +15,7 @@ import {
 import { mapOccurrence, occurrenceSelect } from "./mappers.js";
 import { QueryParameters } from "./query.js";
 import {
+  displayErrorImpactsReady,
   displayErrorRollupFiltersReady,
   displayErrorReadModelReady,
   liveErrorGroupRollupsReady,
@@ -545,9 +546,103 @@ export async function registerProjectAndErrorRoutes(
       );
       await requireProjectMembership(pool, request, projectId);
       const displayReadModelReady = await displayErrorReadModelReady(pool);
+      const displayImpactsReady = displayReadModelReady
+        ? await displayErrorImpactsReady(pool)
+        : false;
 
       const result = await pool.query(
-        `WITH matching AS (
+        displayImpactsReady ? `WITH requested_group AS MATERIALIZED (
+           SELECT
+             id, fingerprint, level, source, normalized_message, source_script
+           FROM display_error_groups
+           WHERE project_id = $1 AND fingerprint = $2
+         ),
+         edge_bounds AS (
+           SELECT
+             now() - interval '3 days' AS cutoff,
+             date_trunc('hour', now() - interval '3 days') + interval '1 hour'
+               AS complete_from,
+             date_trunc('hour', now()) AS complete_to
+         ),
+         counts AS (
+           SELECT
+             rollups.event_count,
+             rollups.first_seen_at,
+             rollups.last_seen_at
+           FROM requested_group
+           CROSS JOIN edge_bounds
+           JOIN display_error_rollups_hourly rollups
+             ON rollups.project_id = $1
+            AND rollups.display_group_id = requested_group.id
+            AND rollups.bucket_at >= edge_bounds.complete_from
+            AND rollups.bucket_at < edge_bounds.complete_to
+           UNION ALL
+           SELECT
+             SUM(occurrences.repeat_count)::bigint,
+             MIN(occurrences.occurred_at),
+             MAX(COALESCE(
+               occurrences.last_occurred_at,
+               occurrences.occurred_at
+             ))
+           FROM requested_group
+           CROSS JOIN edge_bounds
+           JOIN display_error_group_members members
+             ON members.display_group_id = requested_group.id
+           JOIN occurrences
+             ON occurrences.project_id = $1
+            AND occurrences.group_id = members.exact_group_id
+            AND occurrences.occurred_at >= edge_bounds.cutoff
+            AND (
+              occurrences.occurred_at < edge_bounds.complete_from
+              OR occurrences.occurred_at >= edge_bounds.complete_to
+            )
+           HAVING COUNT(*) > 0
+         ),
+         stats AS (
+           SELECT
+             COALESCE(SUM(event_count), 0)::int AS event_count,
+             MIN(first_seen_at) AS first_seen_at,
+             MAX(last_seen_at) AS last_seen_at
+           FROM counts
+         ),
+         latest AS MATERIALIZED (
+           SELECT occurrences.*
+           FROM requested_group
+           JOIN display_error_group_members members
+             ON members.display_group_id = requested_group.id
+           JOIN occurrences
+             ON occurrences.project_id = $1
+            AND occurrences.group_id = members.exact_group_id
+            AND occurrences.occurred_at >= now() - interval '3 days'
+           ORDER BY occurrences.occurred_at DESC, occurrences.id DESC
+           LIMIT 1
+         )
+         SELECT
+           stats.*,
+           (SELECT COUNT(*)::int
+            FROM display_error_group_players players
+            WHERE players.project_id = $1
+              AND players.display_group_id = requested_group.id
+              AND players.last_seen_at >= now() - interval '3 days')
+             AS affected_player_count,
+           (SELECT COUNT(*)::int
+            FROM display_error_group_jobs jobs
+            WHERE jobs.project_id = $1
+              AND jobs.display_group_id = requested_group.id
+              AND jobs.last_seen_at >= now() - interval '3 days')
+             AS affected_server_count,
+           requested_group.fingerprint AS group_fingerprint,
+           requested_group.level AS group_level,
+           requested_group.source AS group_source,
+           requested_group.normalized_message AS group_message,
+           requested_group.source_script AS group_source_script,
+           ${occurrenceSelect}
+         FROM requested_group
+         CROSS JOIN stats
+         JOIN latest o ON true
+         JOIN error_groups eg ON eg.id = o.group_id
+         LEFT JOIN sessions s ON s.id = o.session_id`
+        : `WITH matching AS (
            SELECT o.*
            FROM occurrences o
            ${displayReadModelReady ? `JOIN display_error_group_members member
