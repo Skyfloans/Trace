@@ -15,6 +15,12 @@ const longNumericIdentifierPattern = /(?<![A-Za-z0-9_])\d{7,20}(?![A-Za-z0-9_])/
 const recordKeyIdentifierPattern =
   /((?:PLAYER|USER|INDEX)_)(\d{7,20})\b/gi;
 const loadedPlayerNamePattern = /^(Data loaded for player\s+)[A-Za-z0-9_]{3,20}$/i;
+const playersServiceChildPattern =
+  /(\bPlayers\.)[A-Za-z0-9_]{3,20}(?=\.)/g;
+const playSessionSummaryPattern =
+  /^⌛\s+(?:<PLAYER_NAME>|[A-Za-z0-9_]{3,20}):\s*Played for\s+\d+:\d{2}\s*\|\s*New Server Average Session Time:\s*\d+:\d{2}$/i;
+const movementGuardPlayerPattern =
+  /^\[MovementGuard\]\s+(?:<PLAYER_NAME>|[A-Za-z0-9_]{3,20})\s+held impossible speed,\s*snapping back$/i;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -68,8 +74,15 @@ export function normalizeText(value: string, batch: IngestBatch): string {
 }
 
 export function normalizeStableDisplayText(value: string): string {
-  return value
+  const normalizedDiagnostic = playSessionSummaryPattern.test(value)
+    ? "⌛ <PLAYER_NAME>: Played for <DURATION> | New Server Average Session Time: <DURATION>"
+    : movementGuardPlayerPattern.test(value)
+      ? "[MovementGuard] <PLAYER_NAME> held impossible speed, snapping back"
+      : value;
+
+  return normalizedDiagnostic
     .replace(loadedPlayerNamePattern, "$1<PLAYER_NAME>")
+    .replace(playersServiceChildPattern, "$1<PLAYER_NAME>")
     .replace(recordKeyIdentifierPattern, "$1<ID>")
     .replace(longNumericIdentifierPattern, "<ID>");
 }

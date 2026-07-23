@@ -212,6 +212,54 @@ test("known player-load messages group even without session context", () => {
   assert.equal(first.displayFingerprint, second.displayFingerprint);
 });
 
+test("player session diagnostics normalize usernames and durations", () => {
+  const firstBatch = makeBatch("Skyfloans");
+  const secondBatch = makeBatch("Skyfloans");
+  firstBatch.sessions = [];
+  secondBatch.sessions = [];
+  firstBatch.events[0]!.message =
+    "⌛ lunnnnie1234: Played for 16:07\t\t| New Server Average Session Time: 8:48";
+  secondBatch.events[0]!.message =
+    "⌛ Another_Player2: Played for 2:59 | New Server Average Session Time: 10:08";
+
+  const first = fingerprintEvent(firstBatch.events[0]!, firstBatch);
+  const second = fingerprintEvent(secondBatch.events[0]!, secondBatch);
+
+  assert.equal(
+    first.displayMessage,
+    "⌛ <PLAYER_NAME>: Played for <DURATION> | New Server Average Session Time: <DURATION>",
+  );
+  assert.equal(first.displayFingerprint, second.displayFingerprint);
+});
+
+test("known player-shaped Roblox diagnostics normalize without session context", () => {
+  const cases = [
+    [
+      "[MovementGuard] AV0CAD0911 held impossible speed, snapping back",
+      "[MovementGuard] Other_Player held impossible speed, snapping back",
+      "[MovementGuard] <PLAYER_NAME> held impossible speed, snapping back",
+    ],
+    [
+      "Infinite yield possible on 'Players.Michellew19.Backpack.WaterGun:WaitForChild(\"CurrentAmmo\")'",
+      "Infinite yield possible on 'Players.Other_Player.Backpack.WaterGun:WaitForChild(\"CurrentAmmo\")'",
+      "Infinite yield possible on 'Players.<PLAYER_NAME>.Backpack.WaterGun:WaitForChild(\"CurrentAmmo\")'",
+    ],
+  ] as const;
+
+  for (const [firstMessage, secondMessage, expected] of cases) {
+    const firstBatch = makeBatch("Skyfloans");
+    const secondBatch = makeBatch("Skyfloans");
+    firstBatch.sessions = [];
+    secondBatch.sessions = [];
+    firstBatch.events[0]!.message = firstMessage;
+    secondBatch.events[0]!.message = secondMessage;
+    const first = fingerprintEvent(firstBatch.events[0]!, firstBatch);
+    const second = fingerprintEvent(secondBatch.events[0]!, secondBatch);
+    assert.equal(first.displayMessage, expected);
+    assert.equal(first.displayFingerprint, second.displayFingerprint);
+  }
+});
+
 test("numeric suffixes inside usernames are not treated as standalone IDs", () => {
   const batch = makeBatch("Skyfloans");
   batch.sessions = [];
