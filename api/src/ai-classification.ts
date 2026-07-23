@@ -78,6 +78,15 @@ const resultEnvelopeSchema = z.object({
 const promptVersion = 1;
 const maxAttempts = 5;
 
+function parseStructuredContent(content: string): unknown {
+  const firstBrace = content.indexOf("{");
+  const lastBrace = content.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace <= firstBrace) {
+    throw new Error("OpenRouter returned no JSON object");
+  }
+  return JSON.parse(content.slice(firstBrace, lastBrace + 1));
+}
+
 function categoriesFor(target: ClassificationTarget): readonly string[] {
   return target === "error" ? ERROR_AI_CATEGORIES : FEEDBACK_AI_CATEGORIES;
 }
@@ -180,7 +189,7 @@ export async function classifyWithOpenRouter(
           },
         ],
         response_format: responseFormat(target, inputs.length),
-        reasoning: { effort: "minimal", exclude: true },
+        reasoning: { enabled: false, exclude: true },
         temperature: 0,
         max_completion_tokens: Math.max(350, inputs.length * 90),
       }),
@@ -196,7 +205,7 @@ export async function classifyWithOpenRouter(
   const completion = openRouterResponseSchema.parse(await response.json());
   const content = completion.choices[0]?.message.content;
   if (!content) throw new Error("OpenRouter returned no classification content");
-  const parsed = resultEnvelopeSchema.parse(JSON.parse(content));
+  const parsed = resultEnvelopeSchema.parse(parseStructuredContent(content));
   const allowed = new Set(categoriesFor(target));
   const seen = new Set<number>();
   const results = parsed.results.flatMap((result) => {

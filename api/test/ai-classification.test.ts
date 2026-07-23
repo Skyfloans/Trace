@@ -76,14 +76,17 @@ test("feedback classification only permits product-signal categories", async () 
         return new Response(JSON.stringify({
           choices: [{
             message: {
-              content: JSON.stringify({
+              content: `Here is the requested JSON:
+\`\`\`json
+${JSON.stringify({
                 results: [{
                   key: 0,
                   category: "suggestion",
                   confidence: 0.88,
                   reason: "Requests a new inventory search feature.",
                 }],
-              }),
+              })}
+\`\`\``,
             },
           }],
         }), { status: 200, headers: { "Content-Type": "application/json" } });
