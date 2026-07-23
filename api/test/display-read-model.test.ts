@@ -238,4 +238,14 @@ test("INDEX datastore groups are remapped across every fast read model", async (
   assert.match(script, /INSERT INTO display_error_group_players/);
   assert.match(script, /INSERT INTO display_error_group_jobs/);
   assert.match(script, /INDEX remap verification failed/);
+
+  const fullBackfill = await readFile(
+    new URL("../scripts/backfill-display-error-read-model.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(fullBackfill, /existing_display_fingerprint/);
+  assert.match(
+    fullBackfill,
+    /effective_fingerprint IS DISTINCT FROM[\s\S]+existing_display_fingerprint/,
+  );
 });

@@ -18,21 +18,27 @@ try {
     const result = await client.query(`
       WITH candidates AS (
         SELECT
-          id,
-          project_id,
-          fingerprint,
-          source,
-          level,
-          source_script,
-          normalized_message,
-          display_fingerprint,
-          display_message,
-          display_source_script,
-          first_seen_at,
-          last_seen_at
+          error_groups.id,
+          error_groups.project_id,
+          error_groups.fingerprint,
+          error_groups.source,
+          error_groups.level,
+          error_groups.source_script,
+          error_groups.normalized_message,
+          error_groups.display_fingerprint,
+          error_groups.display_message,
+          error_groups.display_source_script,
+          existing_members.display_group_id AS existing_display_group_id,
+          existing_display.fingerprint AS existing_display_fingerprint,
+          error_groups.first_seen_at,
+          error_groups.last_seen_at
         FROM error_groups
-        WHERE id > $2::uuid
-        ORDER BY id
+        LEFT JOIN display_error_group_members existing_members
+          ON existing_members.exact_group_id = error_groups.id
+        LEFT JOIN display_error_groups existing_display
+          ON existing_display.id = existing_members.display_group_id
+        WHERE error_groups.id > $2::uuid
+        ORDER BY error_groups.id
         LIMIT $1
       ), player_values AS (
         SELECT
@@ -115,6 +121,8 @@ try {
         SELECT *
         FROM identities
         WHERE effective_fingerprint IS DISTINCT FROM display_fingerprint
+           OR effective_fingerprint IS DISTINCT FROM
+             existing_display_fingerprint
       ), display_input AS (
         SELECT
           project_id,

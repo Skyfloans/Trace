@@ -102,18 +102,15 @@ try {
           )
         END AS new_source_script
       FROM error_groups exact
+      JOIN display_error_group_members current_membership
+        ON current_membership.exact_group_id = exact.id
       JOIN display_error_groups legacy
-        ON legacy.project_id = exact.project_id
-       AND legacy.fingerprint = COALESCE(
-         exact.display_fingerprint,
-         exact.fingerprint
-       )
+        ON legacy.id = current_membership.display_group_id
       WHERE (
-        COALESCE(exact.display_message, exact.normalized_message)
+        legacy.normalized_message
           ~* 'INDEX_[0-9]{7,20}([^A-Za-z0-9_]|$)'
         OR COALESCE(
-          exact.display_source_script,
-          exact.source_script,
+          legacy.source_script,
           ''
         ) ~* 'INDEX_[0-9]{7,20}([^A-Za-z0-9_]|$)'
       )
