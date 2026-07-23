@@ -5,7 +5,10 @@ import { createPool, withTransaction } from "./db.js";
 import { archiveEligiblePartitions } from "./telemetry-archive.js";
 import { startAIClassificationWorker } from "./ai-classification.js";
 
-const ingestionPool = createPool(config.DATABASE_URL, 16);
+// Busy games can legitimately queue many different per-fingerprint advisory
+// locks at once. Keep enough pool headroom that unrelated ingestion does not
+// fail its five-second connection acquisition while those locks resolve.
+const ingestionPool = createPool(config.DATABASE_URL, 32);
 const readPool = createPool(config.DATABASE_URL, 8);
 const classificationPool = config.OPENROUTER_API_KEY
   ? createPool(
