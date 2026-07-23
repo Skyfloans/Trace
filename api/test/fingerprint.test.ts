@@ -193,6 +193,32 @@ test("long numeric IDs normalize across product types and datastore keys", () =>
   }
 });
 
+test("known player-load messages group even without session context", () => {
+  const firstBatch = makeBatch("Skyfloans");
+  const secondBatch = makeBatch("Skyfloans");
+  firstBatch.sessions = [];
+  secondBatch.sessions = [];
+  firstBatch.events[0]!.message = "Data loaded for player Yungw6y";
+  secondBatch.events[0]!.message = "Data loaded for player Another_Player2";
+
+  const first = fingerprintEvent(firstBatch.events[0]!, firstBatch);
+  const second = fingerprintEvent(secondBatch.events[0]!, secondBatch);
+
+  assert.equal(first.displayMessage, "Data loaded for player <PLAYER_NAME>");
+  assert.equal(first.displayFingerprint, second.displayFingerprint);
+});
+
+test("numeric suffixes inside usernames are not treated as standalone IDs", () => {
+  const batch = makeBatch("Skyfloans");
+  batch.sessions = [];
+  batch.events[0]!.message = "Player se4822828 joined";
+
+  assert.equal(
+    fingerprintEvent(batch.events[0]!, batch).displayMessage,
+    "Player se4822828 joined",
+  );
+});
+
 test("ordinary numeric details remain part of the fingerprint", () => {
   const firstBatch = makeBatch("Skyfloans");
   const secondBatch = makeBatch("Skyfloans");

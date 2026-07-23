@@ -11,7 +11,9 @@ const serviceUserIdPattern = /(\bUser\s+)\d{3,20}\b/gi;
 // Roblox asset, product, game pass, user, and application-generated record IDs
 // are all decimal integers. Restrict this fallback to long values so ordinary
 // counts, line numbers, status codes, and version numbers remain meaningful.
-const longNumericIdentifierPattern = /(?<!\d)\d{7,20}(?!\d)/g;
+const longNumericIdentifierPattern = /(?<![A-Za-z0-9_])\d{7,20}(?![A-Za-z0-9_])/g;
+const recordKeyIdentifierPattern = /((?:PLAYER|USER)_)(\d{7,20})\b/gi;
+const loadedPlayerNamePattern = /^(Data loaded for player\s+)[A-Za-z0-9_]{3,20}$/i;
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -64,8 +66,15 @@ export function normalizeText(value: string, batch: IngestBatch): string {
     .replace(memoryAddressPattern, "<ADDRESS>");
 }
 
+export function normalizeStableDisplayText(value: string): string {
+  return value
+    .replace(loadedPlayerNamePattern, "$1<PLAYER_NAME>")
+    .replace(recordKeyIdentifierPattern, "$1<ID>")
+    .replace(longNumericIdentifierPattern, "<ID>");
+}
+
 export function normalizeDisplayText(value: string, batch: IngestBatch): string {
-  return normalizeText(value, batch).replace(longNumericIdentifierPattern, "<ID>");
+  return normalizeStableDisplayText(normalizeText(value, batch));
 }
 
 export function fingerprintEvent(
@@ -110,9 +119,7 @@ export function fingerprintEvent(
     normalizedMessage,
     normalizedStack,
     normalizedSourceScript,
-    displayFingerprint: createHash("sha256")
-      .update(displayIdentity)
-      .digest("hex"),
+    displayFingerprint: createHash("sha256").update(displayIdentity).digest("hex"),
     displayMessage,
     displaySourceScript,
   };

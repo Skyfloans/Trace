@@ -34,7 +34,7 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
           rowCount: 1,
         };
       }
-      if (sql.includes("SELECT pg_advisory_xact_lock(") && sql.includes("ordered.fingerprint")) {
+      if (sql.includes("SELECT pg_advisory_xact_lock(locks.lock_key)")) {
         return { rows: [], rowCount: 1 };
       }
       if (sql.includes("INSERT INTO error_groups")) {
@@ -43,6 +43,7 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
           rows: [{
             id: "40000000-0000-4000-8000-000000000001",
             fingerprint: groups[0].fingerprint,
+            display_group_id: "70000000-0000-4000-8000-000000000001",
           }],
           rowCount: 1,
         };
@@ -89,9 +90,14 @@ test("ingestion updates raw occurrences and live hourly totals atomically", asyn
   assert.match(occurrenceSql, /live_rollups AS \(\s+INSERT INTO occurrence_rollups_hourly/);
   assert.match(
     occurrenceSql,
+    /display_live_rollups AS \(\s+INSERT INTO display_error_rollups_hourly/,
+  );
+  assert.match(
+    occurrenceSql,
     /event_count = occurrence_rollups_hourly\.event_count \+ EXCLUDED\.event_count/,
   );
   assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM live_rollups/);
+  assert.match(occurrenceSql, /SELECT COUNT\(\*\) FROM display_live_rollups/);
   assert.equal(released, true);
 });
 
@@ -758,6 +764,106 @@ test("grouped logs use hourly summaries and raw partial-hour edges", async () =>
   await app.close();
 });
 
+test("current grouped logs use the indexed display read model", async () => {
+  const queries: string[] = [];
+  const pool = {
+    query: async (sql: string) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
+      }
+      if (sql.includes("display_error_read_model_v1")) {
+        return { rows: [{ ready: true }], rowCount: 1 };
+      }
+      if (sql.includes("display_error_rollups_hourly")) {
+        queries.push(sql);
+        return {
+          rows: [{
+            group_id: "a".repeat(64),
+            fingerprint: "a".repeat(64),
+            level: "warning",
+            source: "server",
+            normalized_message: "Data loaded for player <PLAYER_NAME>",
+            source_script: null,
+            event_count: 551653,
+            first_seen_at: "2026-07-22T10:00:00.000Z",
+            last_seen_at: "2026-07-22T11:00:00.000Z",
+            cursor_last_seen_at: "2026-07-22T11:00:00.000Z",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const hour = 60 * 60 * 1_000;
+  const currentHour = Math.floor(Date.now() / hour) * hour;
+  const range = `from=${encodeURIComponent(new Date(currentHour - 23 * hour).toISOString())}&to=${encodeURIComponent(new Date(currentHour + hour).toISOString())}`;
+
+  const recent = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors?${range}&severity=error,warning&sort=recent&limit=25`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+  const count = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors?${range}&severity=error,warning&sort=count&limit=25`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+  const cursor = encodeCursor([
+    551653,
+    "2026-07-22T11:00:00.000Z",
+    "a".repeat(64),
+  ]);
+  const recentPageTwo = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors?${range}&severity=error,warning&sort=recent&limit=25&cursor=${encodeURIComponent(cursor)}`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+  const countPageTwo = await app.inject({
+    method: "GET",
+    url: `/v1/projects/20000000-0000-4000-8000-000000000001/errors?${range}&severity=error,warning&sort=count&limit=25&cursor=${encodeURIComponent(cursor)}`,
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(recent.statusCode, 200);
+  assert.equal(count.statusCode, 200);
+  assert.equal(recentPageTwo.statusCode, 200);
+  assert.equal(countPageTwo.statusCode, 200);
+  assert.equal(recent.json().data[0].title, "Data loaded for player <PLAYER_NAME>");
+  assert.match(queries[0]!, /FROM display_error_groups deg/);
+  assert.match(queries[0]!, /ORDER BY deg\.last_seen_at DESC, deg\.fingerprint DESC/);
+  assert.match(queries[0]!, /LIMIT \$\d+/);
+  assert.doesNotMatch(queries[0]!, /FROM occurrence_rollups_hourly/);
+  assert.match(queries[1]!, /GROUP BY r\.display_group_id/);
+  assert.match(
+    queries[1]!,
+    /ORDER BY event_count DESC, last_seen_at DESC, group_id DESC/,
+  );
+  assert.match(
+    queries[2]!,
+    /\(deg\.last_seen_at, deg\.fingerprint\) < \(/,
+  );
+  assert.match(
+    queries[3]!,
+    /\(event_count, last_seen_at, group_id\) < \(/,
+  );
+  await app.close();
+});
+
 test("error message variants preserve and aggregate original IDs", async () => {
   let variantsSql = "";
   const pool = {
@@ -774,6 +880,12 @@ test("error message variants preserve and aggregate original IDs", async () => {
       }
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("to_regclass('public.trace_read_model_state')")) {
+        return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
+      }
+      if (sql.includes("display_error_read_model_v1")) {
+        return { rows: [{ ready: false }], rowCount: 1 };
       }
       if (sql.includes("WITH variants AS")) {
         variantsSql = sql;
@@ -924,7 +1036,10 @@ test("activity queries combine raw occurrences with hourly rollups", async () =>
         return { rows: [{ relation: "trace_read_model_state" }], rowCount: 1 };
       }
       if (sql.includes("FROM trace_read_model_state")) {
-        return { rows: [{ ready: true }], rowCount: 1 };
+        return {
+          rows: [{ ready: !sql.includes("display_error_read_model_v1") }],
+          rowCount: 1,
+        };
       }
       if (sql.includes("occurrence_rollups_hourly")) {
         activitySql = sql;

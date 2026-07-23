@@ -361,21 +361,43 @@ async function insertEvents(
     })),
   );
 
-  // Different Roblox servers frequently report the same group set. Acquire
-  // deterministic transaction locks so their row updates cannot deadlock.
+  // Different Roblox servers frequently report the same group set and hour.
+  // Acquire every exact-group and display-hour lock in one deterministic order
+  // so ingestion and the online read-model backfill cannot lose increments.
   await client.query(
-    `SELECT pg_advisory_xact_lock(
-       hashtextextended($1::text || ':' || ordered.fingerprint, 0)
-     )
+    `SELECT pg_advisory_xact_lock(locks.lock_key)
      FROM (
-       SELECT DISTINCT input.fingerprint
+       SELECT hashtextextended(
+         $1::text || ':' || input.fingerprint,
+         0
+       ) AS lock_key
        FROM jsonb_to_recordset($2::jsonb) AS input(fingerprint text)
-       ORDER BY input.fingerprint
-     ) ordered`,
-    [projectId, groupInputJson],
+       UNION
+       SELECT hashtextextended(
+         'display-rollup:' || $1::text || ':' ||
+         to_char(
+           date_trunc('hour', event.occurred_at AT TIME ZONE 'UTC'),
+           'YYYY-MM-DD"T"HH24'
+         ),
+         0
+       ) AS lock_key
+       FROM jsonb_to_recordset($3::jsonb) AS event(occurred_at timestamptz)
+     ) locks
+     ORDER BY locks.lock_key`,
+    [
+      projectId,
+      groupInputJson,
+      JSON.stringify(
+        normalizedEvents.map(({ event }) => ({ occurred_at: event.occurredAt })),
+      ),
+    ],
   );
 
-  const groupResult = await client.query<{ id: string; fingerprint: string }>(
+  const groupResult = await client.query<{
+    id: string;
+    fingerprint: string;
+    display_group_id: string;
+  }>(
     `WITH input AS (
        SELECT *
        FROM jsonb_to_recordset($2::jsonb) AS item(
@@ -385,7 +407,7 @@ async function insertEvents(
          display_source_script text,
          first_seen_at timestamptz, last_seen_at timestamptz
        )
-     ), upserted AS (
+     ), exact_upserted AS (
      INSERT INTO error_groups (
        project_id, fingerprint, source, level, source_script,
        normalized_message, normalized_stack, display_fingerprint,
@@ -412,26 +434,103 @@ async function insertEvents(
      WHERE (error_groups.source_script IS NULL AND EXCLUDED.source_script IS NOT NULL)
         OR (error_groups.normalized_stack IS NULL AND EXCLUDED.normalized_stack IS NOT NULL)
      RETURNING id, fingerprint
+     ), exact_groups AS (
+       SELECT id, fingerprint FROM exact_upserted
+       UNION
+       SELECT groups.id, groups.fingerprint
+       FROM error_groups groups
+       JOIN input ON input.fingerprint = groups.fingerprint
+       WHERE groups.project_id = $1
+     ), display_input AS (
+       SELECT
+         display_fingerprint AS fingerprint,
+         level,
+         source,
+         display_message AS normalized_message,
+         display_source_script AS source_script,
+         MIN(first_seen_at) AS first_seen_at,
+         MAX(last_seen_at) AS last_seen_at
+       FROM input
+       GROUP BY
+         display_fingerprint,
+         level,
+         source,
+         display_message,
+         display_source_script
+     ), display_upserted AS (
+       INSERT INTO display_error_groups (
+         project_id, fingerprint, level, source, normalized_message,
+         source_script, first_seen_at, last_seen_at
+       )
+       SELECT
+         $1,
+         display_input.fingerprint,
+         display_input.level::log_level,
+         display_input.source::log_source,
+         display_input.normalized_message,
+         display_input.source_script,
+         display_input.first_seen_at,
+         display_input.last_seen_at
+       FROM display_input
+       ORDER BY display_input.fingerprint
+       ON CONFLICT (project_id, fingerprint) DO UPDATE
+       SET first_seen_at = LEAST(
+             display_error_groups.first_seen_at,
+             EXCLUDED.first_seen_at
+           ),
+           last_seen_at = GREATEST(
+             display_error_groups.last_seen_at,
+             EXCLUDED.last_seen_at
+           ),
+           source_script = COALESCE(
+             display_error_groups.source_script,
+             EXCLUDED.source_script
+           )
+       RETURNING id, fingerprint
+     ), display_groups AS (
+       SELECT id, fingerprint FROM display_upserted
+       UNION
+       SELECT groups.id, groups.fingerprint
+       FROM display_error_groups groups
+       JOIN display_input ON display_input.fingerprint = groups.fingerprint
+       WHERE groups.project_id = $1
+     ), members AS (
+       INSERT INTO display_error_group_members (
+         exact_group_id,
+         display_group_id
+       )
+       SELECT exact_groups.id, display_groups.id
+       FROM input
+       JOIN exact_groups ON exact_groups.fingerprint = input.fingerprint
+       JOIN display_groups
+         ON display_groups.fingerprint = input.display_fingerprint
+       ON CONFLICT (exact_group_id) DO UPDATE
+       SET display_group_id = EXCLUDED.display_group_id
+       RETURNING exact_group_id, display_group_id
      )
-     SELECT id, fingerprint FROM upserted
-     UNION
-     SELECT groups.id, groups.fingerprint
-     FROM error_groups groups
-     JOIN input ON input.fingerprint = groups.fingerprint
-     WHERE groups.project_id = $1`,
+     SELECT
+       exact_groups.id,
+       exact_groups.fingerprint,
+       members.display_group_id
+     FROM exact_groups
+     JOIN members ON members.exact_group_id = exact_groups.id`,
     [projectId, groupInputJson],
   );
   const groupIds = new Map(
-    groupResult.rows.map((row) => [row.fingerprint, row.id]),
+    groupResult.rows.map((row) => [
+      row.fingerprint,
+      { exactGroupId: row.id, displayGroupId: row.display_group_id },
+    ]),
   );
   const occurrences = normalizedEvents.map(({ event, normalized }) => {
-    const groupId = groupIds.get(normalized.fingerprint);
-    if (!groupId) {
+    const groupsForEvent = groupIds.get(normalized.fingerprint);
+    if (!groupsForEvent) {
       throw new Error("Failed to create or find error group");
     }
     return {
       id: event.id,
-      group_id: groupId,
+      group_id: groupsForEvent.exactGroupId,
+      display_group_id: groupsForEvent.displayGroupId,
       session_id: event.sessionId ?? null,
       occurred_at: event.occurredAt,
       last_occurred_at: event.lastOccurredAt ?? event.occurredAt,
@@ -452,7 +551,8 @@ async function insertEvents(
     `WITH input AS (
        SELECT *
        FROM jsonb_to_recordset($3::jsonb) AS event(
-         id uuid, group_id uuid, session_id uuid, occurred_at timestamptz,
+         id uuid, group_id uuid, display_group_id uuid, session_id uuid,
+         occurred_at timestamptz,
          last_occurred_at timestamptz, repeat_count integer,
          original_message text, original_stack text, context jsonb
        )
@@ -470,7 +570,7 @@ async function insertEvents(
        FROM input
        ON CONFLICT (id, occurred_at) DO NOTHING
        RETURNING
-         group_id, session_id, occurred_at, last_occurred_at, repeat_count
+         id, group_id, session_id, occurred_at, last_occurred_at, repeat_count
      ),
      totals AS (
        SELECT
@@ -518,6 +618,37 @@ async function insertEvents(
              EXCLUDED.last_seen_at
            )
        RETURNING group_id
+     ), display_live_rollups AS (
+       INSERT INTO display_error_rollups_hourly (
+         project_id, display_group_id, bucket_at, event_count,
+         first_seen_at, last_seen_at
+       )
+       SELECT
+         $1,
+         input.display_group_id,
+         date_trunc(
+           'hour',
+           inserted.occurred_at AT TIME ZONE 'UTC'
+         ) AT TIME ZONE 'UTC',
+         SUM(inserted.repeat_count)::bigint,
+         MIN(inserted.occurred_at),
+         MAX(COALESCE(inserted.last_occurred_at, inserted.occurred_at))
+       FROM inserted
+       JOIN input
+         ON input.id = inserted.id
+        AND input.occurred_at = inserted.occurred_at
+       GROUP BY input.display_group_id, 3
+       ON CONFLICT (project_id, display_group_id, bucket_at) DO UPDATE
+       SET event_count = display_error_rollups_hourly.event_count + EXCLUDED.event_count,
+           first_seen_at = LEAST(
+             display_error_rollups_hourly.first_seen_at,
+             EXCLUDED.first_seen_at
+           ),
+           last_seen_at = GREATEST(
+             display_error_rollups_hourly.last_seen_at,
+             EXCLUDED.last_seen_at
+           )
+       RETURNING display_group_id
      ),
      updated AS (
        UPDATE error_groups groups
@@ -531,7 +662,8 @@ async function insertEvents(
      SELECT
        COALESCE(SUM(inserted.repeat_count), 0)::int AS accepted,
        (SELECT COUNT(*) FROM updated) AS updated_group_count,
-       (SELECT COUNT(*) FROM live_rollups) AS updated_rollup_count
+       (SELECT COUNT(*) FROM live_rollups) AS updated_rollup_count,
+       (SELECT COUNT(*) FROM display_live_rollups) AS updated_display_rollup_count
      FROM inserted`,
     [projectId, jobId, JSON.stringify(occurrences)],
   );

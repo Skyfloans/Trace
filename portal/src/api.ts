@@ -215,7 +215,7 @@ async function apiRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
   const response = await fetch(apiUrl(path), {
     credentials: 'include',
     ...init,
-    cache: 'no-store',
+    cache: init.method === 'GET' ? 'default' : 'no-store',
     headers: {
       Accept: 'application/json',
       ...(init.body ? { 'Content-Type': 'application/json' } : {}),
