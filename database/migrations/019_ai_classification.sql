@@ -60,10 +60,22 @@ CREATE OR REPLACE FUNCTION enqueue_ai_classification()
 RETURNS TRIGGER
 LANGUAGE plpgsql
 AS $$
+DECLARE
+    classification_target ai_classification_target;
 BEGIN
-    IF TG_TABLE_NAME = 'display_error_groups'
-       AND NEW.level NOT IN ('error', 'warning') THEN
-        RETURN NEW;
+    -- Branch on the trigger relation before reading relation-specific fields.
+    -- PostgreSQL trigger records do not expose missing columns, and boolean
+    -- expressions are not guaranteed to short-circuit field evaluation.
+    IF TG_TABLE_NAME = 'display_error_groups' THEN
+        IF NEW.level NOT IN ('error', 'warning') THEN
+            RETURN NEW;
+        END IF;
+        classification_target := 'error'::ai_classification_target;
+    ELSIF TG_TABLE_NAME = 'feedback' THEN
+        classification_target := 'feedback'::ai_classification_target;
+    ELSE
+        RAISE EXCEPTION 'Unsupported AI classification target table: %',
+            TG_TABLE_NAME;
     END IF;
 
     INSERT INTO ai_classification_jobs (
@@ -73,10 +85,7 @@ BEGIN
         priority
     )
     VALUES (
-        CASE TG_TABLE_NAME
-            WHEN 'display_error_groups' THEN 'error'::ai_classification_target
-            ELSE 'feedback'::ai_classification_target
-        END,
+        classification_target,
         NEW.id,
         NEW.project_id,
         10

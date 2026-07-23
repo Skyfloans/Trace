@@ -207,6 +207,14 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
   );
   assert.match(migration, /AFTER INSERT ON display_error_groups/);
   assert.match(migration, /AFTER INSERT ON feedback/);
+  assert.match(
+    migration,
+    /IF TG_TABLE_NAME = 'display_error_groups' THEN[\s\S]+IF NEW\.level NOT IN/,
+  );
+  assert.doesNotMatch(
+    migration,
+    /TG_TABLE_NAME = 'display_error_groups'\s+AND NEW\.level/,
+  );
   assert.doesNotMatch(migration, /ALTER TABLE occurrences|DELETE FROM occurrences/);
   assert.match(indexes, /CREATE INDEX CONCURRENTLY/);
   assert.match(indexes, /display_error_rollups_ai_filter_idx/);

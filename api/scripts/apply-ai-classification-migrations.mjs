@@ -9,6 +9,10 @@ const migration020 = await readFile(
   new URL("../../database/migrations/020_ai_classification_indexes.sql", import.meta.url),
   "utf8",
 );
+const migration021 = await readFile(
+  new URL("../../database/migrations/021_ai_classification_trigger.sql", import.meta.url),
+  "utf8",
+);
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 const validateOnly = process.argv.includes("--validate-only");
@@ -38,6 +42,7 @@ try {
     .filter(Boolean)) {
     await client.query(statement);
   }
+  await client.query(migration021);
   const verification = await client.query(`
     SELECT
       EXISTS (
