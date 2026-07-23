@@ -522,7 +522,7 @@ export function startAIClassificationWorker(
               workerId,
             );
             if (inputs.length === 0) continue;
-            const timeout = AbortSignal.timeout(20_000);
+            const timeout = AbortSignal.timeout(30_000);
             const signal = AbortSignal.any([controller.signal, timeout]);
             const results = await classifyWithOpenRouter(
               options,
