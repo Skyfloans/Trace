@@ -223,6 +223,31 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
   assert.match(backfill, /ON CONFLICT \(target_type, target_id\) DO NOTHING/);
 });
 
+test("AI error classifications are cached once per normalized fingerprint", async () => {
+  const migration = await readFile(
+    new URL(
+      "../../database/migrations/022_ai_error_classification_cache.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const reconciliation = await readFile(
+    new URL("../scripts/reconcile-ai-error-queue.mjs", import.meta.url),
+    "utf8",
+  );
+  const worker = await readFile(
+    new URL("../src/ai-classification.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(migration, /fingerprint TEXT PRIMARY KEY/);
+  assert.match(reconciliation, /DISTINCT ON \(groups\.fingerprint\)/);
+  assert.match(reconciliation, /groups\.last_seen_at >= now\(\) - interval '3 days'/);
+  assert.match(worker, /JOIN ai_error_classifications cached/);
+  assert.match(worker, /groups\.fingerprint = fingerprints\.fingerprint/);
+  assert.match(worker, /target_type = 'feedback'[\s\S]+OR priority > 0/);
+});
+
 test("INDEX datastore groups are remapped across every fast read model", async () => {
   const script = await readFile(
     new URL("../scripts/remap-index-datastore-errors.mjs", import.meta.url),

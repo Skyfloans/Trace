@@ -31,6 +31,7 @@ type ClassificationJob = {
 type ClassificationInput = {
   id: string;
   type: ClassificationTarget;
+  fingerprint?: string;
   message: string;
   severity?: string;
   side?: string;
@@ -235,12 +236,18 @@ async function claimJobs(
          SELECT target_type, target_id
          FROM ai_classification_jobs
          WHERE (
+           target_type = 'feedback'
+           OR priority > 0
+         )
+           AND (
+           (
              status = 'pending'
              AND available_at <= now()
            )
            OR (
              status = 'processing'
              AND locked_at < now() - interval '2 minutes'
+           )
            )
          ORDER BY priority DESC, available_at, created_at, target_id
          FOR UPDATE SKIP LOCKED
@@ -275,6 +282,7 @@ async function loadInputs(
     const result = await pool.query(
       `SELECT
          id,
+         fingerprint,
          normalized_message AS message,
          level::text AS severity,
          source::text AS side,
@@ -287,6 +295,7 @@ async function loadInputs(
     return result.rows.map((row) => ({
       id: String(row.id),
       type: target,
+      fingerprint: String(row.fingerprint),
       message: String(row.message),
       severity: String(row.severity),
       side: String(row.side),
@@ -305,6 +314,86 @@ async function loadInputs(
     type: target,
     message: String(row.message),
   }));
+}
+
+async function applyCachedErrorClassifications(
+  pool: Pool,
+  jobs: ClassificationJob[],
+): Promise<void> {
+  const ids = jobs.map((job) => job.target_id);
+  if (ids.length === 0) return;
+  await withTransaction(pool, async (client) => {
+    await client.query(
+      `WITH fingerprints AS MATERIALIZED (
+         SELECT DISTINCT groups.fingerprint
+         FROM display_error_groups groups
+         JOIN ai_error_classifications cached
+           ON cached.fingerprint = groups.fingerprint
+         WHERE groups.id = ANY($1::uuid[])
+       )
+       UPDATE display_error_groups groups
+       SET ai_category = cached.category,
+           ai_confidence = cached.confidence,
+           ai_reason = cached.reason,
+           ai_classified_at = cached.classified_at,
+           ai_model = cached.model,
+           ai_prompt_version = cached.prompt_version,
+           ai_status = 'classified'
+       FROM fingerprints
+       JOIN ai_error_classifications cached
+         ON cached.fingerprint = fingerprints.fingerprint
+       WHERE groups.fingerprint = fingerprints.fingerprint
+         AND (
+           groups.ai_status <> 'classified'
+           OR groups.ai_prompt_version < cached.prompt_version
+         )`,
+      [ids],
+    );
+    await client.query(
+      `WITH fingerprints AS MATERIALIZED (
+         SELECT DISTINCT groups.fingerprint
+         FROM display_error_groups groups
+         JOIN ai_error_classifications cached
+           ON cached.fingerprint = groups.fingerprint
+         WHERE groups.id = ANY($1::uuid[])
+       )
+       UPDATE display_error_rollups_hourly rollups
+       SET ai_category = cached.category
+       FROM display_error_groups groups
+       JOIN fingerprints
+         ON fingerprints.fingerprint = groups.fingerprint
+       JOIN ai_error_classifications cached
+         ON cached.fingerprint = fingerprints.fingerprint
+       WHERE rollups.display_group_id = groups.id
+         AND rollups.ai_category IS DISTINCT FROM cached.category`,
+      [ids],
+    );
+    await client.query(
+      `WITH fingerprints AS MATERIALIZED (
+         SELECT DISTINCT groups.fingerprint
+         FROM display_error_groups groups
+         JOIN ai_error_classifications cached
+           ON cached.fingerprint = groups.fingerprint
+         WHERE groups.id = ANY($1::uuid[])
+       )
+       DELETE FROM ai_classification_jobs jobs
+       USING display_error_groups groups, fingerprints
+       WHERE jobs.target_type = 'error'
+         AND jobs.target_id = groups.id
+         AND groups.fingerprint = fingerprints.fingerprint`,
+      [ids],
+    );
+  });
+}
+
+function uniqueNormalizedErrorInputs(
+  inputs: ClassificationInput[],
+): ClassificationInput[] {
+  const unique = new Map<string, ClassificationInput>();
+  for (const input of inputs) {
+    unique.set(input.fingerprint ?? input.id, input);
+  }
+  return [...unique.values()];
 }
 
 async function applyResults(
@@ -330,33 +419,95 @@ async function applyResults(
            $3::real[],
            $4::text[]
          ) AS input(id, category, confidence, reason)
+       ), decisions AS (
+         SELECT
+           groups.fingerprint,
+           input.category,
+           input.confidence,
+           input.reason
+         FROM input
+         JOIN display_error_groups groups ON groups.id = input.id
        )
-       UPDATE display_error_groups groups
-       SET ai_category = input.category,
-           ai_confidence = input.confidence,
-           ai_reason = input.reason,
-           ai_classified_at = now(),
-           ai_model = $5,
-           ai_prompt_version = $6,
-           ai_status = 'classified'
-       FROM input
-       WHERE groups.id = input.id`,
+       INSERT INTO ai_error_classifications (
+         fingerprint,
+         category,
+         confidence,
+         reason,
+         classified_at,
+         model,
+         prompt_version
+       )
+       SELECT
+         fingerprint,
+         category,
+         confidence,
+         reason,
+         now(),
+         $5,
+         $6
+       FROM decisions
+       ON CONFLICT (fingerprint) DO UPDATE
+       SET category = EXCLUDED.category,
+           confidence = EXCLUDED.confidence,
+           reason = EXCLUDED.reason,
+           classified_at = EXCLUDED.classified_at,
+           model = EXCLUDED.model,
+           prompt_version = EXCLUDED.prompt_version`,
       [ids, categories, confidences, reasons, model, promptVersion],
     );
     await client.query(
-      `WITH input AS (
-         SELECT *
-         FROM unnest(
-           $1::uuid[],
-           $2::error_ai_category[]
-         ) AS input(id, category)
+      `WITH fingerprints AS MATERIALIZED (
+         SELECT DISTINCT groups.fingerprint
+         FROM display_error_groups groups
+         WHERE groups.id = ANY($1::uuid[])
+       )
+       UPDATE display_error_groups groups
+       SET ai_category = cached.category,
+           ai_confidence = cached.confidence,
+           ai_reason = cached.reason,
+           ai_classified_at = cached.classified_at,
+           ai_model = cached.model,
+           ai_prompt_version = cached.prompt_version,
+           ai_status = 'classified'
+       FROM fingerprints
+       JOIN ai_error_classifications cached
+         ON cached.fingerprint = fingerprints.fingerprint
+       WHERE groups.fingerprint = fingerprints.fingerprint
+         AND (
+           groups.ai_status <> 'classified'
+           OR groups.ai_prompt_version < cached.prompt_version
+         )`,
+      [ids],
+    );
+    await client.query(
+      `WITH fingerprints AS MATERIALIZED (
+         SELECT DISTINCT fingerprint
+         FROM display_error_groups
+         WHERE id = ANY($1::uuid[])
        )
        UPDATE display_error_rollups_hourly rollups
-       SET ai_category = input.category
-       FROM input
-       WHERE rollups.display_group_id = input.id
-         AND rollups.ai_category IS DISTINCT FROM input.category`,
-      [ids, categories],
+       SET ai_category = cached.category
+       FROM display_error_groups groups
+       JOIN fingerprints
+         ON fingerprints.fingerprint = groups.fingerprint
+       JOIN ai_error_classifications cached
+         ON cached.fingerprint = fingerprints.fingerprint
+       WHERE rollups.display_group_id = groups.id
+         AND rollups.ai_category IS DISTINCT FROM cached.category`,
+      [ids],
+    );
+    await client.query(
+      `WITH fingerprints AS MATERIALIZED (
+         SELECT DISTINCT fingerprint
+         FROM display_error_groups
+         WHERE id = ANY($1::uuid[])
+       )
+       DELETE FROM ai_classification_jobs jobs
+       USING display_error_groups groups, fingerprints
+       WHERE jobs.target_type = 'error'
+         AND jobs.target_id = groups.id
+         AND groups.fingerprint = fingerprints.fingerprint`,
+      [ids],
     );
   } else {
     await client.query(
@@ -382,14 +533,16 @@ async function applyResults(
       [ids, categories, confidences, reasons, model, promptVersion],
     );
   }
-  await client.query(
-    `DELETE FROM ai_classification_jobs jobs
-     USING unnest($2::uuid[]) AS input(id)
-     WHERE jobs.target_type = $1::ai_classification_target
-       AND jobs.target_id = input.id
-       AND jobs.locked_by = $3`,
-    [target, ids, workerId],
-  );
+  if (target === "feedback") {
+    await client.query(
+      `DELETE FROM ai_classification_jobs jobs
+       USING unnest($2::uuid[]) AS input(id)
+       WHERE jobs.target_type = $1::ai_classification_target
+         AND jobs.target_id = input.id
+         AND jobs.locked_by = $3`,
+      [target, ids, workerId],
+    );
+  }
 }
 
 async function discardMissingTargets(
@@ -509,18 +662,24 @@ export function startAIClassificationWorker(
           const targetJobs = jobs.filter((job) => job.target_type === target);
           if (targetJobs.length === 0) continue;
           try {
-            const inputs = await loadInputs(
+            if (target === "error") {
+              await applyCachedErrorClassifications(options.pool, targetJobs);
+            }
+            const loadedInputs = await loadInputs(
               options.pool,
               target,
               targetJobs.map((job) => job.target_id),
             );
-            const loadedIds = new Set(inputs.map((input) => input.id));
+            const loadedIds = new Set(loadedInputs.map((input) => input.id));
             await discardMissingTargets(
               options.pool,
               targetJobs,
               loadedIds,
               workerId,
             );
+            const inputs = target === "error"
+              ? uniqueNormalizedErrorInputs(loadedInputs)
+              : loadedInputs;
             if (inputs.length === 0) continue;
             const timeout = AbortSignal.timeout(30_000);
             const signal = AbortSignal.any([controller.signal, timeout]);
