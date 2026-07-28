@@ -1,3 +1,5 @@
+import { zstdDecompressSync } from "node:zlib";
+
 type ScriptClass = "Script" | "LocalScript" | "ModuleScript";
 
 export type PlaceScript = {
@@ -98,6 +100,29 @@ function lz4Block(input: Buffer, expectedLength: number): Buffer {
   return output;
 }
 
+const ZSTD_MAGIC = Buffer.from([0x28, 0xb5, 0x2f, 0xfd]);
+
+function decompressChunk(input: Buffer, expectedLength: number): Buffer {
+  if (expectedLength > 128 * 1_024 * 1_024) {
+    throw new Error("Roblox place chunk exceeds safety limit");
+  }
+  if (input.subarray(0, ZSTD_MAGIC.length).equals(ZSTD_MAGIC)) {
+    let output: Buffer;
+    try {
+      output = zstdDecompressSync(input, {
+        maxOutputLength: expectedLength,
+      });
+    } catch {
+      throw new Error("Invalid ZSTD Roblox place chunk");
+    }
+    if (output.length !== expectedLength) {
+      throw new Error("ZSTD chunk length mismatch");
+    }
+    return output;
+  }
+  return lz4Block(input, expectedLength);
+}
+
 function interleavedU32(reader: Reader, count: number): number[] {
   const bytes = reader.bytes(count * 4);
   return Array.from({ length: count }, (_, index) => (
@@ -166,7 +191,7 @@ function extractBinaryScripts(body: Buffer): PlaceScript[] {
     reader.bytes(4);
     const encoded = reader.bytes(compressedLength || uncompressedLength);
     const payload = compressedLength
-      ? lz4Block(encoded, uncompressedLength)
+      ? decompressChunk(encoded, uncompressedLength)
       : encoded;
     const chunk = new Reader(payload);
 

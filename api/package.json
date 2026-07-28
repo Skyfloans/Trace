@@ -10,6 +10,7 @@
     "migrate:roblox-place-access": "node scripts/apply-roblox-place-access-migration.mjs",
     "migrate:roblox-plugin-pairing": "node scripts/apply-roblox-plugin-pairing-migration.mjs",
     "migrate:roblox-autofix": "node scripts/apply-roblox-autofix-migration.mjs",
+    "retry:roblox-zstd-autofix": "node scripts/retry-roblox-zstd-autofix.mjs",
     "start": "node dist/server.js",
     "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -18,7 +19,7 @@
   "author": "",
   "license": "ISC",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.15.0"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1090.0",

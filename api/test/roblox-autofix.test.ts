@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { zstdCompressSync } from "node:zlib";
 import type { Pool, PoolClient } from "pg";
 import {
   findTargetScript,
@@ -10,6 +11,69 @@ import {
   extractScriptsFromPlace,
   type PlaceScript,
 } from "../src/roblox-place-parser.js";
+
+function littleEndianU32(value: number): Buffer {
+  const body = Buffer.alloc(4);
+  body.writeUInt32LE(value);
+  return body;
+}
+
+function placeString(value: string): Buffer {
+  const body = Buffer.from(value);
+  return Buffer.concat([littleEndianU32(body.length), body]);
+}
+
+function placeChunk(kind: string, payload: Buffer, compressed = true): Buffer {
+  const name = Buffer.alloc(4);
+  name.write(kind, "ascii");
+  const encoded = compressed ? zstdCompressSync(payload) : payload;
+  return Buffer.concat([
+    name,
+    littleEndianU32(compressed ? encoded.length : 0),
+    littleEndianU32(payload.length),
+    Buffer.alloc(4),
+    encoded,
+  ]);
+}
+
+function minimalZstdPlace(): Buffer {
+  const signature = Buffer.from([
+    0x3c, 0x72, 0x6f, 0x62, 0x6c, 0x6f, 0x78, 0x21,
+    0x89, 0xff, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]);
+  const instance = Buffer.concat([
+    littleEndianU32(1),
+    placeString("Script"),
+    Buffer.from([0]),
+    littleEndianU32(1),
+    Buffer.from([0, 0, 0, 2]),
+  ]);
+  const property = (name: string, value: string) =>
+    Buffer.concat([
+      littleEndianU32(1),
+      placeString(name),
+      Buffer.from([0x01]),
+      placeString(value),
+    ]);
+  const parenting = Buffer.concat([
+    Buffer.from([0]),
+    littleEndianU32(1),
+    Buffer.from([0, 0, 0, 2]),
+    Buffer.from([0, 0, 0, 1]),
+  ]);
+  return Buffer.concat([
+    signature,
+    Buffer.alloc(2),
+    littleEndianU32(1),
+    littleEndianU32(1),
+    Buffer.alloc(8),
+    placeChunk("INST", instance),
+    placeChunk("PROP", property("Name", "Bootstrap")),
+    placeChunk("PROP", property("Source", 'print("ready")')),
+    placeChunk("PRNT", parenting),
+    placeChunk("END", Buffer.from("</roblox>"), false),
+  ]);
+}
 
 test("extracts scripts and full paths from a real binary Roblox model", async () => {
   const body = await readFile(
@@ -23,6 +87,15 @@ test("extracts scripts and full paths from a real binary Roblox model", async ()
     script.className === "ModuleScript" &&
     script.source.includes("LogCollector")
   ));
+});
+
+test("extracts scripts from ZSTD-compressed Roblox chunks", () => {
+  assert.deepEqual(extractScriptsFromPlace(minimalZstdPlace()), [{
+    className: "Script",
+    name: "Bootstrap",
+    path: "Bootstrap",
+    source: 'print("ready")',
+  }]);
 });
 
 test("extracts scripts from XML places", async () => {
