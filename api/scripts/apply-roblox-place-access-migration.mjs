@@ -6,10 +6,7 @@ if (!process.env.DATABASE_URL) {
 }
 
 const migration = await readFile(
-  new URL(
-    "../../database/migrations/025_roblox_place_access.sql",
-    import.meta.url,
-  ),
+  new URL("./migrations/025_roblox_place_access.sql", import.meta.url),
   "utf8",
 );
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
