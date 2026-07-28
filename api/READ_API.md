@@ -86,6 +86,22 @@ POST   /v1/manage/projects/{projectId}/roblox-place-snapshots
 DELETE /v1/manage/projects/{projectId}/roblox-place-access
 ```
 
+Studio plugin pairing uses public request/verification endpoints and
+website-session-protected approval endpoints:
+
+```text
+POST /v1/plugin-auth/requests
+GET  /v1/manage/plugin-auth/{browserToken}
+POST /v1/manage/plugin-auth/{browserToken}/approve
+POST /v1/plugin-auth/requests/{requestId}/verify
+GET  /v1/plugin-auth/session
+POST /v1/plugin-auth/revoke
+```
+
+`/v1/plugin-auth/session` and `/revoke` accept only the opaque plugin bearer
+credential. Roblox OAuth access and refresh tokens are never exposed through
+this contract.
+
 Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
 the first event represented by that sampled row. Group, activity, session, and
 job counts sum `repeatCount`, so compact storage does not change displayed

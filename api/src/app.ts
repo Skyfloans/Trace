@@ -214,6 +214,7 @@ export async function buildApp(
     readPool,
     oauth ? { ...oauth, webOrigin } : null,
     archiveStorage,
+    webOrigin,
   );
 
   return app;

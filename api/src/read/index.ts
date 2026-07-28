@@ -8,6 +8,7 @@ import { registerFeedbackRoutes } from "./feedback.js";
 import { registerProjectAndErrorRoutes } from "./projects-errors.js";
 import { registerRobloxMetadataRoutes } from "./roblox.js";
 import { registerRobloxPlaceAccessRoutes } from "./roblox-place-access.js";
+import { registerRobloxPluginAuthRoutes } from "./roblox-plugin-auth.js";
 import { registerSessionAndLogRoutes } from "./sessions-logs.js";
 
 export async function registerReadApi(
@@ -15,9 +16,16 @@ export async function registerReadApi(
   pool: Pool,
   oauth: RobloxOAuthConfig | null = null,
   archiveStorage: ArchiveStorage | null = null,
+  webOrigin = "http://localhost:5173",
 ): Promise<void> {
   const authenticate = createReadAuthenticator(pool);
   await registerAccountRoutes(app, pool, authenticate, oauth);
+  await registerRobloxPluginAuthRoutes(
+    app,
+    pool,
+    authenticate,
+    webOrigin,
+  );
   await registerRobloxPlaceAccessRoutes(
     app,
     pool,

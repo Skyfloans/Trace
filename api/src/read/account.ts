@@ -37,6 +37,7 @@ type OAuthFlow = {
   universe_id: string | null;
   project_id: string | null;
   target_universe_id: string | null;
+  return_path: string | null;
   code_verifier: string;
 };
 
@@ -59,6 +60,15 @@ const startSchema = z.object({
   universeId: numericId.optional(),
   projectId: z.uuid().optional(),
   targetUniverseId: numericId.optional(),
+  returnTo: z
+    .string()
+    .trim()
+    .max(512)
+    .refine(
+      (value) => value.startsWith("/") && !value.startsWith("//"),
+      "returnTo must be a same-origin path",
+    )
+    .optional(),
 });
 const callbackSchema = z.object({
   code: z.string().min(1).optional(),
@@ -315,7 +325,7 @@ export async function registerAccountRoutes(
 ): Promise<void> {
   app.get("/v1/auth/roblox/start", async (request, reply) => {
     if (!oauth) throw new ReadApiError(503, "oauth_not_configured", "Roblox sign-in is not configured yet.");
-    const { intent, universeId, projectId, targetUniverseId } =
+    const { intent, universeId, projectId, targetUniverseId, returnTo } =
       startSchema.parse(request.query);
     const existingUser = await findReadUserForRequest(pool, request);
     if (intent === "claim" && (!existingUser || !universeId)) {
@@ -366,9 +376,10 @@ export async function registerAccountRoutes(
     await pool.query(
       `INSERT INTO roblox_oauth_flows (
          state_hash, browser_binding_hash, user_id, intent, universe_id,
-         project_id, target_universe_id, code_verifier, nonce, expires_at
+         project_id, target_universe_id, return_path, code_verifier, nonce,
+         expires_at
        ) VALUES (
-         $1, $2, $3, $4, $5, $6, $7, $8, $9,
+         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
          now() + INTERVAL '10 minutes'
        )`,
       [
@@ -379,6 +390,7 @@ export async function registerAccountRoutes(
         intent === "claim" ? universeId! : null,
         intent === "place_access" ? projectId! : null,
         intent === "place_access" ? targetUniverseId! : null,
+        intent === "login" ? returnTo ?? null : null,
         verifier,
         nonce,
       ],
@@ -420,7 +432,7 @@ export async function registerAccountRoutes(
       `DELETE FROM roblox_oauth_flows
        WHERE state_hash = $1 AND expires_at > now()
        RETURNING browser_binding_hash, user_id, intent, universe_id,
-                 project_id, target_universe_id, code_verifier`,
+                 project_id, target_universe_id, return_path, code_verifier`,
       [hash(query.state)],
     );
     const flow = flowResult.rows[0];
@@ -569,8 +581,16 @@ export async function registerAccountRoutes(
           );
         }
       } else {
-        destination.pathname = "/dashboard";
-        destination.searchParams.set("signedIn", "true");
+        if (flow.return_path) {
+          const returnDestination = new URL(flow.return_path, oauth.webOrigin);
+          destination.pathname = returnDestination.pathname;
+          destination.search = returnDestination.search;
+          destination.hash = returnDestination.hash;
+          destination.searchParams.set("signedIn", "true");
+        } else {
+          destination.pathname = "/dashboard";
+          destination.searchParams.set("signedIn", "true");
+        }
       }
       return reply.redirect(destination.toString());
     } catch (error) {

@@ -1,0 +1,16 @@
+{
+  "name": "TraceAutofix",
+  "tree": {
+    "$className": "Script",
+    "$path": "plugin/src/init.server.luau",
+    "Api": {
+      "$path": "plugin/src/Api.luau"
+    },
+    "Theme": {
+      "$path": "plugin/src/Theme.luau"
+    },
+    "Widget": {
+      "$path": "plugin/src/Widget.luau"
+    }
+  }
+}

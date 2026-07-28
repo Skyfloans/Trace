@@ -22,3 +22,24 @@ test("the API image packages the canonical Roblox place-access migration", async
 
   assert.equal(packaged, canonical);
 });
+
+test("the API image packages the canonical Roblox plugin-pairing migration", async () => {
+  const [canonical, packaged] = await Promise.all([
+    readFile(
+      new URL(
+        "../../database/migrations/026_roblox_plugin_pairing.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../scripts/migrations/026_roblox_plugin_pairing.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ]);
+
+  assert.equal(packaged, canonical);
+});

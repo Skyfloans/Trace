@@ -98,6 +98,15 @@ npm run migrate:roblox-place-access
 The command applies migration 025 and verifies the grant table, snapshot table,
 and OAuth target-universe column before reporting readiness.
 
+After the plugin-pairing code is deployed, run this second one-off migration:
+
+```text
+npm run migrate:roblox-plugin-pairing
+```
+
+It applies migration 026 and verifies the pairing-request table, scoped plugin
+credential table, and OAuth same-origin return-path column.
+
 ## Roblox experience secrets
 
 For every connected experience, edit or recreate the `TraceKey` secret so its

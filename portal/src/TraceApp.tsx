@@ -9,7 +9,7 @@ import {
   ApiError, apiDelete, apiGet, apiPost, apiUrl, getRobloxGameMetadata, getRobloxPlayerHeadshots, projectPath, queryString, timeRange,
   type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type ErrorMessageVariant, type FeedbackEntry, type GroupedError, type GroupedErrorSummary,
   type AIClassification, type ErrorAICategory, type FeedbackAICategory, type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
-  type RobloxGameMetadata, type RobloxPlaceAccess, type RobloxPlaceSnapshot, type ServerJob, type Session, type Severity,
+  type RobloxGameMetadata, type RobloxPlaceAccess, type RobloxPlaceSnapshot, type RobloxPluginPairingApproval, type RobloxPluginPairingPreview, type ServerJob, type Session, type Severity,
 } from './api'
 import './App.css'
 
@@ -224,6 +224,11 @@ function toApiError(reason: unknown) {
 function TraceApp() {
   const initialQuery = useMemo(() => new URLSearchParams(window.location.search), [])
   const initialRoute = useMemo(() => readPortalRoute(), [])
+  const startsOnPluginConnect = window.location.pathname === '/plugin-connect'
+  const pluginConnectToken = startsOnPluginConnect ? initialQuery.get('token') : null
+  const pluginReturnTo = startsOnPluginConnect
+    ? `${window.location.pathname}${window.location.search}`
+    : null
   const oauthError = initialQuery.get('oauthError')
   if (initialQuery.get('signedIn') === 'true') localStorage.removeItem('trace-explicitly-signed-out')
   const explicitlySignedOut = localStorage.getItem('trace-explicitly-signed-out') === 'true'
@@ -243,14 +248,19 @@ function TraceApp() {
   const noticeTimer = useRef<number | undefined>(undefined)
 
   useEffect(() => {
-    if (startsOnManage) writePortalRoute('/games', true)
+    if (startsOnPluginConnect && initialQuery.has('signedIn')) {
+      const query = new URLSearchParams(initialQuery)
+      query.delete('signedIn')
+      writePortalRoute(`/plugin-connect${query.size ? `?${query}` : ''}`, true)
+    }
+    else if (startsOnManage) writePortalRoute('/games', true)
     else if (initialQuery.has('signedIn')) writePortalRoute('/dashboard', true)
     else if (oauthError) writePortalRoute('/', true)
     else if (initialRoute.sessionId && window.location.hash) {
       const event = initialRoute.eventId ? `?event=${encodeURIComponent(initialRoute.eventId)}` : ''
       writePortalRoute(`/sessions/${encodeURIComponent(initialRoute.sessionId)}${event}`, true)
     }
-  }, [initialQuery, initialRoute.eventId, initialRoute.sessionId, oauthError, startsOnManage])
+  }, [initialQuery, initialRoute.eventId, initialRoute.sessionId, oauthError, startsOnManage, startsOnPluginConnect])
 
   useEffect(() => {
     const syncFromHistory = () => {
@@ -284,6 +294,8 @@ function TraceApp() {
   )
   const documentTitle = explicitlySignedOut || projectsResource.error?.status === 401
     ? 'Trace - Sign In'
+    : startsOnPluginConnect
+      ? 'Trace - Connect Studio'
     : projectsResource.loading && !projectsResource.data
       ? 'Trace'
       : projectsResource.error
@@ -295,6 +307,7 @@ function TraceApp() {
   }, [documentTitle])
 
   useEffect(() => {
+    if (startsOnPluginConnect) return
     if (project) {
       setProjectId(project.id)
       localStorage.setItem('trace-project-id', project.id)
@@ -307,7 +320,7 @@ function TraceApp() {
     setPage((current) => current === 'team' ? 'team' : 'games')
     setActiveNav((current) => current === 'team' ? 'team' : 'games')
     if (!['/games', '/team'].includes(window.location.pathname)) writePortalRoute('/games', true)
-  }, [project, projectsResource.data])
+  }, [project, projectsResource.data, startsOnPluginConnect])
 
   const navigate = useCallback((next: NavPage) => {
     if (!hasProject && next !== 'games' && next !== 'team') return
@@ -376,13 +389,16 @@ function TraceApp() {
     return () => window.removeEventListener('keydown', handleKeyDown)
   }, [hasProject, navigate])
 
-  if (explicitlySignedOut) return <SignIn oauthError={oauthError} />
+  if (explicitlySignedOut) return <SignIn oauthError={oauthError} returnTo={pluginReturnTo} />
   if (projectsResource.loading && !projectsResource.data) return <SessionGate />
   if (projectsResource.error) {
     const unauthenticated = projectsResource.error.status === 401
     return unauthenticated
-      ? <SignIn oauthError={oauthError} />
+      ? <SignIn oauthError={oauthError} returnTo={pluginReturnTo} />
       : <AppShell><PageStatus title="Could not load Trace" copy={apiErrorMessage(projectsResource.error)} action="Try again" onAction={projectsResource.reload} /></AppShell>
+  }
+  if (startsOnPluginConnect) {
+    return <PluginPairingPage token={pluginConnectToken} />
   }
   const contextualBack = () => {
     if (sessionOrigin === 'players' && selectedPlayer) {
@@ -446,7 +462,7 @@ function SessionGate() {
   )
 }
 
-function SignIn({ oauthError }: { oauthError: string | null }) {
+function SignIn({ oauthError, returnTo = null }: { oauthError: string | null; returnTo?: string | null }) {
   const errorCopy = oauthError
     ? oauthError === 'authorization_cancelled'
       ? 'Roblox sign-in was cancelled. Nothing was changed.'
@@ -496,7 +512,7 @@ function SignIn({ oauthError }: { oauthError: string | null }) {
         <div className="auth-lockup"><img src="/trace-logo.png" alt="" /><h1 id="sign-in-title">trace</h1></div>
         <p className="auth-tagline">Error observability for Roblox developers</p>
         {errorCopy && <div className="auth-error" role="alert">{errorCopy}</div>}
-        <a className="primary-button roblox-sign-in" href={apiUrl('/v1/auth/roblox/start?intent=login')} onClick={() => localStorage.removeItem('trace-explicitly-signed-out')}>
+        <a className="primary-button roblox-sign-in" href={apiUrl(`/v1/auth/roblox/start${queryString({ intent: 'login', returnTo })}`)} onClick={() => localStorage.removeItem('trace-explicitly-signed-out')}>
           <span className="roblox-mark" aria-hidden="true"><i /></span>
           Continue with Roblox
           <ChevronRight size={18} aria-hidden="true" />
@@ -506,6 +522,130 @@ function SignIn({ oauthError }: { oauthError: string | null }) {
       <footer className="auth-footer"><span>Trace connects errors, sessions, players, and feedback.</span><span>Your Roblox password is never shared with Trace.</span></footer>
     </div>
   )
+}
+
+function PluginPairingPage({ token }: { token: string | null }) {
+  const preview = useResource(
+    (signal) => apiGet<RobloxPluginPairingPreview>(`/v1/manage/plugin-auth/${encodeURIComponent(token ?? '')}`, signal),
+    `plugin-pairing:${token ?? 'missing'}`,
+    Boolean(token),
+  )
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [approval, setApproval] = useState<RobloxPluginPairingApproval | null>(null)
+  const [approving, setApproving] = useState(false)
+  const [approvalError, setApprovalError] = useState<ApiError | null>(null)
+
+  const projects = preview.data?.projects ?? []
+  const selectedId = selectedProjectId
+    ?? preview.data?.request.selectedProjectId
+    ?? (projects.length === 1 ? projects[0]?.id ?? null : null)
+
+  useEffect(() => {
+    if (!selectedProjectId && preview.data?.request.selectedProjectId) {
+      setSelectedProjectId(preview.data.request.selectedProjectId)
+    }
+  }, [preview.data?.request.selectedProjectId, selectedProjectId])
+
+  const approve = async () => {
+    if (!token || !selectedId) return
+    setApproving(true)
+    setApprovalError(null)
+    try {
+      const result = await apiPost<RobloxPluginPairingApproval>(
+        `/v1/manage/plugin-auth/${encodeURIComponent(token)}/approve`,
+        { projectId: selectedId },
+      )
+      setApproval(result)
+      preview.reload()
+    } catch (reason) {
+      setApprovalError(toApiError(reason))
+    } finally {
+      setApproving(false)
+    }
+  }
+
+  const state = !token
+    ? 'invalid'
+    : preview.loading && !preview.data
+      ? 'loading'
+      : preview.error
+        ? 'error'
+        : preview.data?.request.status === 'consumed'
+          ? 'connected'
+          : preview.data?.request.status === 'expired'
+            ? 'expired'
+            : approval
+              ? 'code'
+              : 'review'
+
+  return (
+    <div className="plugin-pairing-layout">
+      <header className="plugin-pairing-topbar"><Brand /><span>Studio connection</span></header>
+      <main className="plugin-pairing-main">
+        <section className="plugin-pairing-card" aria-labelledby="plugin-pairing-title">
+          <div className="plugin-pairing-heading">
+            <span className="plugin-pairing-mark" aria-hidden="true"><KeyRound size={20} /></span>
+            <div><p>Trace Autofix</p><h1 id="plugin-pairing-title">Connect Roblox Studio</h1></div>
+          </div>
+
+          {state === 'loading' && <div className="plugin-pairing-loading" role="status"><span aria-hidden="true" />Checking the Studio request…</div>}
+
+          {state === 'invalid' && <PluginPairingStatus tone="error" title="Invalid connection link" copy="Start a new connection from the Trace plugin in Roblox Studio." />}
+
+          {state === 'error' && <PluginPairingStatus tone="error" title="Could not open this request" copy={apiErrorMessage(preview.error!)} action="Try again" onAction={preview.reload} />}
+
+          {state === 'expired' && <PluginPairingStatus tone="error" title="This request expired" copy="Return to Studio and choose Start over to create a fresh connection." />}
+
+          {state === 'connected' && <PluginPairingStatus tone="success" title="Studio is connected" copy="You can close this page and continue in the Trace plugin." />}
+
+          {state === 'review' && preview.data && <>
+            <p className="plugin-pairing-intro">Confirm the Trace game that this Studio session is allowed to review. The plugin cannot publish changes without your action in Studio.</p>
+            <div className="plugin-pairing-context">
+              <div><span>Studio experience</span><strong>{preview.data.request.studioUniverseId}</strong></div>
+              <div><span>Place</span><strong>{preview.data.request.studioPlaceId}</strong></div>
+            </div>
+            {projects.length > 0
+              ? <label className="plugin-project-select">
+                  <span>Trace game</span>
+                  <select value={selectedId ?? ''} onChange={(event) => setSelectedProjectId(event.target.value)}>
+                    {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
+                  </select>
+                  <small>Source universe {projects.find((project) => project.id === selectedId)?.robloxUniverseId ?? projects[0]?.robloxUniverseId}</small>
+                </label>
+              : <PluginPairingStatus tone="error" title="No matching admin access" copy="This Studio experience is not linked to a Trace game where you are an owner or admin." />}
+            {approvalError && <div className="plugin-pairing-inline-error" role="alert">{apiErrorMessage(approvalError)}</div>}
+            {projects.length > 0 && <button className="primary-button plugin-approve-button" type="button" onClick={approve} disabled={approving || !selectedId}>
+              <ShieldCheck size={17} aria-hidden="true" />{approving ? 'Creating code…' : 'Authorize this Studio'}
+            </button>}
+          </>}
+
+          {state === 'code' && approval && <>
+            <div className="plugin-code-status"><Check size={18} aria-hidden="true" /><span>Authorization ready for {approval.project.name}</span></div>
+            <p className="plugin-code-instruction">Type this number in the Trace plugin:</p>
+            <div className="plugin-pairing-code" aria-label={`Pairing code ${approval.code.split('').join(' ')}`}>
+              <span>{approval.code[0]}</span><span>{approval.code[1]}</span>
+            </div>
+            <p className="plugin-code-expiry">This one-time code expires shortly and works only for the Studio request that opened this page.</p>
+          </>}
+
+          {!['loading', 'invalid', 'error'].includes(state) && <div className="plugin-pairing-security"><ShieldCheck size={15} aria-hidden="true" /><span>Trace verifies your signed-in Roblox account, project role, and the current Studio experience.</span></div>}
+        </section>
+      </main>
+    </div>
+  )
+}
+
+function PluginPairingStatus({ tone, title, copy, action, onAction }: {
+  tone: 'error' | 'success'
+  title: string
+  copy: string
+  action?: string
+  onAction?: () => void
+}) {
+  return <div className={`plugin-pairing-status ${tone}`} role={tone === 'error' ? 'alert' : 'status'}>
+    <span className="plugin-pairing-status-icon" aria-hidden="true">{tone === 'success' ? <Check size={20} /> : <CircleAlert size={20} />}</span>
+    <div><strong>{title}</strong><p>{copy}</p>{action && onAction && <button className="secondary-button" type="button" onClick={onAction}>{action}</button>}</div>
+  </div>
 }
 
 function Brand() {

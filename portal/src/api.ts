@@ -70,6 +70,32 @@ export type RobloxPlaceAccess = {
   latestSnapshot: RobloxPlaceSnapshot | null
 }
 
+export type RobloxPluginPairingProject = {
+  id: string
+  name: string
+  robloxUniverseId: string
+  iconUrl: string | null
+  targetUniverseId: string
+}
+
+export type RobloxPluginPairingPreview = {
+  request: {
+    id: string
+    status: 'pending' | 'approved' | 'consumed' | 'expired'
+    studioUniverseId: string
+    studioPlaceId: string
+    expiresAt: string
+    selectedProjectId: string | null
+  }
+  projects: RobloxPluginPairingProject[]
+}
+
+export type RobloxPluginPairingApproval = {
+  code: string
+  expiresAt: string
+  project: RobloxPluginPairingProject
+}
+
 export type ProjectInvitation = {
   id: string
   robloxUserId: string

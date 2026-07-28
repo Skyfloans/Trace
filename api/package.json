@@ -8,6 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "dev": "tsx watch src/server.ts",
     "migrate:roblox-place-access": "node scripts/apply-roblox-place-access-migration.mjs",
+    "migrate:roblox-plugin-pairing": "node scripts/apply-roblox-plugin-pairing-migration.mjs",
     "start": "node dist/server.js",
     "test": "tsx --test test/**/*.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"

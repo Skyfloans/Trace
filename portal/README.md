@@ -66,6 +66,12 @@ source and enter duplicate universe `10587551620` as the fix target. After
 authorization, use **Sync latest place** to verify the grant and store the
 current root-place snapshot before any fixes are generated.
 
+Roblox Studio plugin requests open `/plugin-connect?token=…`. The page requires
+the existing Trace website session, checks that its Roblox account matches
+Studio, resolves the current Studio universe to an owner/admin project, and
+shows the request-bound two-digit code. A login started from this page returns
+to the same pairing URL after Roblox OAuth.
+
 ## Validation
 
 ```bash

@@ -116,6 +116,36 @@ temporary CDN host, enforces Roblox's 100 MB place-file limit, uploads the RBXL
 with a SHA-256 checksum, and only then creates its database record. The OAuth
 bearer token is never forwarded to the temporary CDN.
 
+## Roblox Studio plugin pairing
+
+Apply `database/migrations/026_roblox_plugin_pairing.sql` after migration 025:
+
+```bash
+npm run migrate:roblox-plugin-pairing
+```
+
+The Studio plugin creates a ten-minute request with the current Studio Roblox
+user, universe, place, and a stable random install ID. Trace returns separate
+high-entropy browser and client proofs. The signed-in website account must
+match the asserted Roblox user and have an owner or admin membership on either
+the source universe or the active place-access target universe.
+
+After website approval, a two-digit code is bound to the request ID and client
+proof, limited to five attempts, and never stored in plaintext. Successful
+verification returns a random 90-day plugin credential. Only its SHA-256 hash
+is stored in PostgreSQL; the credential is scoped to the approving user,
+project, source universe, target universe, Studio place, and plugin install.
+The plugin never receives the Roblox OAuth grant.
+
+```text
+POST /v1/plugin-auth/requests
+GET  /v1/manage/plugin-auth/:browserToken
+POST /v1/manage/plugin-auth/:browserToken/approve
+POST /v1/plugin-auth/requests/:requestId/verify
+GET  /v1/plugin-auth/session
+POST /v1/plugin-auth/revoke
+```
+
 ## AI classification
 
 Trace classifies normalized display-level errors and individual feedback in a
