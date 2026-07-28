@@ -54,6 +54,18 @@ The production container builds the Vite app and serves `dist` with Caddy on
 Railway's assigned `PORT`. The public API origin is committed in
 `.env.production`; no frontend secret is required.
 
+## Optional Autofix connection
+
+Project owners and administrators manage Autofix from the Games page. Normal
+Trace sign-in continues to request identity scopes only. Enabling Autofix opens
+a separate Roblox consent flow for the selected fix-target universe, and the
+portal never receives or stores Roblox tokens.
+
+For the Unbox ASMR test, keep its existing Trace project as the telemetry
+source and enter duplicate universe `10587551620` as the fix target. After
+authorization, use **Sync latest place** to verify the grant and store the
+current root-place snapshot before any fixes are generated.
+
 ## Validation
 
 ```bash

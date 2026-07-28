@@ -77,6 +77,15 @@ GET /v1/projects/{projectId}/server-jobs/{serverJobId}/logs
 GET /v1/projects/{projectId}/server-jobs/{serverJobId}/sessions
 ```
 
+Project owners and admins can manage the OAuth grant used to retrieve the
+current Roblox place:
+
+```text
+GET    /v1/manage/projects/{projectId}/roblox-place-access
+POST   /v1/manage/projects/{projectId}/roblox-place-snapshots
+DELETE /v1/manage/projects/{projectId}/roblox-place-access
+```
+
 Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
 the first event represented by that sampled row. Group, activity, session, and
 job counts sum `repeatCount`, so compact storage does not change displayed

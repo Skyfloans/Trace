@@ -75,7 +75,28 @@ https://api.tracestack.gg/v1/auth/roblox/callback
 ```
 
 Keep the localhost callback while local development still uses it. The OAuth
-app's entry link should be `https://tracestack.gg`.
+app's entry link should be `https://tracestack.gg`. Enable the `openid`,
+`profile`, `universe:read`, and `legacy-asset:manage` scopes before connecting
+place access. Adding scopes requires existing users to authorize again.
+
+Generate and store a dedicated token-encryption secret:
+
+```text
+ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY=<output of openssl rand -base64 32>
+```
+
+Keep this value stable across deploys. The S3-compatible archive connection
+variables must also be configured because current RBXL snapshots are stored in
+that object store even when telemetry partition archival is disabled.
+
+After the API deployment has the new code, run this once from the API service:
+
+```text
+npm run migrate:roblox-place-access
+```
+
+The command applies migration 025 and verifies the grant table, snapshot table,
+and OAuth target-universe column before reporting readiness.
 
 ## Roblox experience secrets
 

@@ -9,7 +9,7 @@ import {
   ApiError, apiDelete, apiGet, apiPost, apiUrl, getRobloxGameMetadata, getRobloxPlayerHeadshots, projectPath, queryString, timeRange,
   type ActivityBucket, type AuthUser, type CursorPage, type ErrorDetail, type ErrorMessageVariant, type FeedbackEntry, type GroupedError, type GroupedErrorSummary,
   type AIClassification, type ErrorAICategory, type FeedbackAICategory, type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
-  type RobloxGameMetadata, type ServerJob, type Session, type Severity,
+  type RobloxGameMetadata, type RobloxPlaceAccess, type RobloxPlaceSnapshot, type ServerJob, type Session, type Severity,
 } from './api'
 import './App.css'
 
@@ -982,7 +982,163 @@ function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId
   </div>
 }
 
+function AutofixAccessControl({
+  project,
+  oauthConnected,
+}: {
+  project: ManagedProject
+  oauthConnected: boolean
+}) {
+  const canManage = project.role === 'owner' || project.role === 'admin'
+  const status = useResource(
+    (signal) => apiGet<RobloxPlaceAccess>(`/v1/manage/projects/${project.id}/roblox-place-access`, signal),
+    `roblox-place-access:${project.id}`,
+    canManage,
+  )
+  const [open, setOpen] = useState(oauthConnected)
+  const [targetUniverseId, setTargetUniverseId] = useState(project.robloxUniverseId ?? '')
+  const [syncing, setSyncing] = useState(false)
+  const [disconnectConfirm, setDisconnectConfirm] = useState(false)
+  const [actionError, setActionError] = useState<ApiError | null>(null)
+  const [actionMessage, setActionMessage] = useState<string | null>(
+    oauthConnected ? 'Roblox access connected. Sync the latest place when you are ready.' : null,
+  )
+
+  useEffect(() => {
+    const connectedTarget = status.data?.grant?.targetUniverseId
+    if (connectedTarget) setTargetUniverseId(connectedTarget)
+  }, [status.data?.grant?.targetUniverseId])
+
+  useEffect(() => {
+    if (oauthConnected) setOpen(true)
+  }, [oauthConnected])
+
+  if (!canManage) return null
+
+  const connected = Boolean(status.data?.connected)
+  const validTarget = /^[1-9]\d{0,19}$/.test(targetUniverseId)
+  const connectPath = `/v1/auth/roblox/start${queryString({
+    intent: 'place_access',
+    projectId: project.id,
+    targetUniverseId,
+  })}`
+  const stateCopy = status.loading && !status.data
+    ? 'Checking access…'
+    : status.error
+      ? 'Access status unavailable'
+      : connected
+        ? `Connected to universe ${status.data?.grant?.targetUniverseId}`
+        : 'Off · telemetry continues normally'
+
+  const syncPlace = async () => {
+    setSyncing(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      const snapshot = await apiPost<RobloxPlaceSnapshot>(
+        `/v1/manage/projects/${project.id}/roblox-place-snapshots`,
+      )
+      setActionMessage(`Latest place synced · ${formatFileSize(snapshot.bytes)}`)
+      status.reload()
+    } catch (error) {
+      setActionError(toApiError(error))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const disconnect = async () => {
+    if (!disconnectConfirm) {
+      setDisconnectConfirm(true)
+      return
+    }
+    setSyncing(true)
+    setActionError(null)
+    setActionMessage(null)
+    try {
+      await apiDelete(`/v1/manage/projects/${project.id}/roblox-place-access`)
+      setDisconnectConfirm(false)
+      setActionMessage('Autofix access disconnected. Trace can no longer download this place.')
+      status.reload()
+    } catch (error) {
+      setActionError(toApiError(error))
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  return <div className={`autofix-control ${connected ? 'connected' : ''}`}>
+    <div className="autofix-summary">
+      <span className="autofix-icon" aria-hidden="true"><ShieldCheck size={17} /></span>
+      <span><strong>Autofix</strong><small>{stateCopy}</small></span>
+      <button
+        className={connected ? 'secondary-button' : 'quiet-button'}
+        type="button"
+        aria-expanded={open}
+        onClick={() => {
+          setOpen((current) => !current)
+          setDisconnectConfirm(false)
+          setActionError(null)
+        }}
+      >
+        {open ? 'Close' : connected ? 'Manage Autofix' : 'Enable Autofix'}
+        <ChevronDown size={15} aria-hidden="true" />
+      </button>
+    </div>
+
+    {open && <div className="autofix-panel">
+      {actionMessage && <div className="autofix-message" role="status"><Check size={16} aria-hidden="true" /><span>{actionMessage}</span></div>}
+      {actionError && <InlineError error={actionError} retry={() => setActionError(null)} title="Autofix action failed" />}
+      {status.error && <InlineError error={status.error} retry={status.reload} title="Could not load Autofix access" />}
+
+      {!status.error && status.loading && !status.data ? <div className="autofix-loading" aria-live="polite"><span aria-hidden="true" /><p>Checking the encrypted Roblox grant…</p></div> : status.data && !status.data.configured ? <div className="autofix-setup-warning">
+        <CircleAlert size={18} aria-hidden="true" />
+        <div><strong>Server setup required</strong><p>Deploy the place-access migration, encryption key, and object storage before authorizing Roblox.</p></div>
+      </div> : status.data && connected && status.data.grant ? <div className="autofix-connected">
+        <div className="autofix-connection-details">
+          <div><span>Fix target</span><strong>Universe {status.data.grant.targetUniverseId}</strong></div>
+          <div><span>Root place</span><strong>{status.data.grant.rootPlaceId}</strong></div>
+          <div><span>Latest source</span><strong>{status.data.latestSnapshot ? formatShortDate(status.data.latestSnapshot.createdAt) : 'Not synced yet'}</strong></div>
+        </div>
+        {status.data.latestSnapshot && <p className="autofix-snapshot-note">Stored {formatFileSize(status.data.latestSnapshot.bytes)} snapshot · SHA-256 <code>{status.data.latestSnapshot.sha256.slice(0, 12)}…</code></p>}
+        <p className="autofix-permission-note">Trace can read this place to prepare fixes. Publishing remains inside Roblox Studio after review.</p>
+        <div className="autofix-actions">
+          <button className="primary-button" type="button" disabled={syncing} onClick={() => void syncPlace()}><Download size={16} aria-hidden="true" />{syncing ? 'Syncing place…' : 'Sync latest place'}</button>
+          <button className={disconnectConfirm ? 'danger-button' : 'quiet-button'} type="button" disabled={syncing} onClick={() => void disconnect()}>{disconnectConfirm ? 'Confirm disconnect' : 'Disconnect'}</button>
+        </div>
+      </div> : status.data && <div className="autofix-connect">
+        <div>
+          <h3>Authorize place access</h3>
+          <p>Trace will keep reading bugs from <strong>{project.name}</strong>. Choose the universe whose scripts should receive the proposed fixes.</p>
+        </div>
+        <label htmlFor={`autofix-target-${project.id}`}>
+          Fix target universe ID
+          <input
+            id={`autofix-target-${project.id}`}
+            inputMode="numeric"
+            value={targetUniverseId}
+            onChange={(event) => {
+              setTargetUniverseId(event.target.value.replace(/\D/g, '').slice(0, 20))
+              setActionMessage(null)
+            }}
+            placeholder={project.robloxUniverseId ?? '10587551620'}
+          />
+          <small>Use <code>10587551620</code> for the temporary Unbox ASMR test experience.</small>
+        </label>
+        <p className="autofix-permission-note">Roblox will ask for read access to the selected experience and its current place file. Trace does not request publish access.</p>
+        <div className="autofix-actions">
+          {validTarget ? <a className="primary-button" href={apiUrl(connectPath)}><ShieldCheck size={16} aria-hidden="true" />Continue to Roblox</a> : <button className="primary-button" type="button" disabled><ShieldCheck size={16} aria-hidden="true" />Continue to Roblox</button>}
+        </div>
+      </div>}
+    </div>}
+  </div>
+}
+
 function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { projectsReload: () => void; firstRun?: boolean; view?: 'games' | 'team' }) {
+  const [autofixConnectedProjectId] = useState(() => {
+    const query = new URLSearchParams(window.location.search)
+    return query.get('placeAccess') === 'connected' ? query.get('projectId') : null
+  })
   const [universeId, setUniverseId] = useState('')
   const [preview, setPreview] = useState<(RobloxGameMetadata & { available: boolean }) | null>(null)
   const [working, setWorking] = useState(false)
@@ -1028,6 +1184,16 @@ function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { pro
     'incoming-project-invitations',
     view === 'team',
   )
+
+  useEffect(() => {
+    if (!autofixConnectedProjectId) return
+    const url = new URL(window.location.href)
+    url.searchParams.delete('manage')
+    url.searchParams.delete('placeAccess')
+    url.searchParams.delete('projectId')
+    url.searchParams.delete('targetUniverseId')
+    window.history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`)
+  }, [autofixConnectedProjectId])
 
   const previewUniverse = async () => {
     if (!/^\d{1,20}$/.test(universeId.trim())) {
@@ -1251,6 +1417,7 @@ function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { pro
         <GameIdentity project={project} enrich />
         <div className="managed-game-meta"><span className={`role-badge role-${project.role}`}>{project.role}</span><span className={`verification-status ${project.verifiedAt ? 'verified' : 'pending'}`}>{project.verifiedAt ? <><Check size={13} aria-hidden="true" />Verified</> : <><Clock3 size={13} aria-hidden="true" />Awaiting data</>}</span><span>{project.keyHint ? `Key ${project.keyHint}` : 'Active ingestion key'}</span></div>
         <div className="managed-game-actions">{project.robloxUniverseId && (project.role === 'owner' || project.role === 'admin') && <a className="secondary-button" href={`https://create.roblox.com/dashboard/creations/experiences/${encodeURIComponent(project.robloxUniverseId)}/secrets`} target="_blank" rel="noreferrer">Manage Secrets <ExternalLink size={15} aria-hidden="true" /></a>}{(project.role === 'owner' || project.role === 'admin') && <button className={keyRotationProject === project.id ? 'danger-button' : 'quiet-button'} disabled={working} onClick={() => void rotateKey(project)}><RotateCcw size={15} aria-hidden="true" />{keyRotationProject === project.id ? 'Confirm rotation' : 'Rotate key'}</button>}{project.role === 'owner' && <button className="quiet-button remove-game-button" disabled={working} onClick={() => setProjectToRemove(project)}><Trash2 size={15} aria-hidden="true" />Remove game</button>}</div>
+        <AutofixAccessControl project={project} oauthConnected={autofixConnectedProjectId === project.id} />
       </article>)}</div>
     </section>)}
 
@@ -1780,6 +1947,11 @@ function formatDate(value: string) {
 
 function formatShortDate(value: string) {
   return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(new Date(value))
+}
+
+function formatFileSize(bytes: number) {
+  const megabytes = bytes / (1_024 * 1_024)
+  return megabytes >= 10 ? `${megabytes.toFixed(0)} MB` : `${megabytes.toFixed(1)} MB`
 }
 
 function formatPreciseTime(value: string) {

@@ -24,6 +24,9 @@ const oauth =
         clientId: config.ROBLOX_OAUTH_CLIENT_ID,
         clientSecret: config.ROBLOX_OAUTH_CLIENT_SECRET,
         redirectUri: config.ROBLOX_OAUTH_REDIRECT_URI,
+        tokenEncryptionKey: config.ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY
+          ? Buffer.from(config.ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY, "base64")
+          : undefined,
       }
     : null;
 const archiveStorage = createArchiveStorage(config);

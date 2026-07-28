@@ -171,6 +171,12 @@ export class ArchiveStorage {
     }
   }
 
+  async delete(objectKey: string): Promise<void> {
+    await this.#client.send(
+      new DeleteObjectCommand({ Bucket: this.#bucket, Key: objectKey }),
+    );
+  }
+
   key(relativeKey: string): string {
     return `${this.#prefix}${relativeKey.replace(/^\/+/, "")}`;
   }

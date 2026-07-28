@@ -15,6 +15,7 @@ const environmentSchema = z
     ROBLOX_OAUTH_CLIENT_ID: z.string().min(1).optional(),
     ROBLOX_OAUTH_CLIENT_SECRET: z.string().min(1).optional(),
     ROBLOX_OAUTH_REDIRECT_URI: z.string().url().optional(),
+    ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY: z.string().trim().min(1).optional(),
     OPENROUTER_API_KEY: z.string().trim().min(20).optional(),
     OPENROUTER_MODEL: z.string().trim().min(1).default("openai/gpt-5.4-nano"),
     AI_CLASSIFICATION_BATCH_SIZE: z.coerce
@@ -43,6 +44,25 @@ const environmentSchema = z
     ARCHIVE_S3_PREFIX: z.string().trim().default("trace-telemetry/"),
   })
   .superRefine((environment, context) => {
+    if (environment.ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY) {
+      const decoded = Buffer.from(
+        environment.ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY,
+        "base64",
+      );
+      if (
+        decoded.byteLength !== 32 ||
+        decoded.toString("base64").replace(/=+$/, "") !==
+          environment.ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY.replace(/=+$/, "")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY"],
+          message:
+            "ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY must be a base64-encoded 32-byte key",
+        });
+      }
+    }
+
     const values = [
       environment.ARCHIVE_STORAGE_PROVIDER,
       environment.ARCHIVE_S3_ENDPOINT,

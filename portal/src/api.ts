@@ -45,6 +45,31 @@ export type ManagedProject = Project & {
   pendingInvitationCount: number
 }
 
+export type RobloxPlaceSnapshot = {
+  id: string
+  targetUniverseId: string
+  placeId: string
+  bytes: number
+  sha256: string
+  createdAt: string
+}
+
+export type RobloxPlaceAccess = {
+  configured: boolean
+  connected: boolean
+  grant: {
+    targetUniverseId: string
+    rootPlaceId: string
+    scopes: string[]
+    authorizedAt: string
+    refreshedAt: string | null
+    revokedAt: string | null
+    lastErrorCode: string | null
+    lastErrorAt: string | null
+  } | null
+  latestSnapshot: RobloxPlaceSnapshot | null
+}
+
 export type ProjectInvitation = {
   id: string
   robloxUserId: string

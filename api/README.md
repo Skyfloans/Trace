@@ -22,14 +22,17 @@ ingestion API key.
 ## Roblox account sign-in and game ownership
 
 Trace uses the Roblox OAuth 2.0 authorization code flow with PKCE. Production
-sign-in requests only `openid profile`. Game linking does not require an OAuth
-resource scope; the first authenticated telemetry batch verifies that its
-universe matches the linked project.
+sign-in requests only `openid profile`. The optional place-access flow requests
+`universe:read legacy-asset:manage` in addition to the identity scopes. The
+first scope binds the grant to the selected experience; the second is the scope
+Roblox's Open Cloud Asset Delivery endpoint currently declares for retrieving
+the place asset.
 
 Configure the OAuth app with:
 
 ```text
 Identity scopes: openid, profile
+Place access scopes: universe:read, legacy-asset:manage
 Local redirect: http://localhost:5173/api/v1/auth/roblox/callback
 Production redirect: https://api.tracestack.gg/v1/auth/roblox/callback
 ```
@@ -43,7 +46,15 @@ CORS origin. Keep the OAuth client secret only in the API environment:
 ROBLOX_OAUTH_CLIENT_ID=...
 ROBLOX_OAUTH_CLIENT_SECRET=...
 ROBLOX_OAUTH_REDIRECT_URI=...
+ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY=...
 ```
+
+Generate the token encryption key once with `openssl rand -base64 32`. Keep it
+stable across deploys and back it up as a secret; rotating it without a
+credential migration makes existing place grants unreadable. Access and
+single-use rotating refresh tokens are encrypted with AES-256-GCM and bound to
+their Trace project before storage. Plaintext tokens are never written to the
+database or object store.
 
 The production values are:
 
@@ -57,6 +68,53 @@ Each universe can belong to only one Trace project. Its owner may invite other
 Roblox users as administrators, members, or viewers. Ingestion keys are stored
 only as SHA-256 hashes and the plaintext value is returned once on creation or
 rotation.
+
+## Roblox place access and snapshots
+
+Place access intentionally separates the Trace telemetry project from the
+editable Roblox target. This lets the real Unbox ASMR project supply its bug
+history while fixes are tested against duplicate universe `10587551620`.
+
+Apply `database/migrations/025_roblox_place_access.sql` with the verified
+one-off command below, configure the OAuth scopes above, and configure the
+existing S3-compatible object store variables.
+
+```bash
+npm run migrate:roblox-place-access
+```
+
+Place snapshots use the same verified object store under
+`roblox-places/<project UUID>/`; `ARCHIVE_ENABLED` does not need to be enabled,
+but all `ARCHIVE_S3_*` connection values must be present.
+
+While signed into Trace as a project owner or administrator, start the grant:
+
+```text
+GET /v1/auth/roblox/start
+    ?intent=place_access
+    &projectId=<Trace project UUID>
+    &targetUniverseId=10587551620
+```
+
+Roblox returns to the existing OAuth callback. Trace verifies that the same
+Roblox account completed the flow, verifies that the selected OAuth resources
+contain the target universe, resolves its root place, and stores the encrypted
+rotating grant. It does not change `projects.roblox_universe_id`; that remains
+the telemetry source.
+
+The management endpoints are:
+
+```text
+GET    /v1/manage/projects/:projectId/roblox-place-access
+POST   /v1/manage/projects/:projectId/roblox-place-snapshots
+DELETE /v1/manage/projects/:projectId/roblox-place-access
+```
+
+The snapshot POST refreshes OAuth under a database row lock when needed,
+requests the current root-place asset from Roblox Open Cloud, validates the
+temporary CDN host, enforces Roblox's 100 MB place-file limit, uploads the RBXL
+with a SHA-256 checksum, and only then creates its database record. The OAuth
+bearer token is never forwarded to the temporary CDN.
 
 ## AI classification
 

@@ -11,6 +11,11 @@ import {
 } from "./auth.js";
 import { ReadApiError } from "./http.js";
 import { getGameMetadata } from "./roblox.js";
+import {
+  resolveRootPlaceId,
+  ROBLOX_PLACE_OAUTH_SCOPES,
+  saveRobloxPlaceGrant,
+} from "./roblox-place-access.js";
 
 type Authenticator = (
   request: FastifyRequest,
@@ -21,14 +26,17 @@ export type RobloxOAuthConfig = {
   clientId: string;
   clientSecret: string;
   redirectUri: string;
+  tokenEncryptionKey?: Buffer;
   webOrigin: string;
 };
 
 type OAuthFlow = {
   browser_binding_hash: Buffer;
   user_id: string | null;
-  intent: "login" | "claim";
+  intent: "login" | "claim" | "place_access";
   universe_id: string | null;
+  project_id: string | null;
+  target_universe_id: string | null;
   code_verifier: string;
 };
 
@@ -44,11 +52,13 @@ const OAUTH_BASE = "https://apis.roblox.com/oauth/v1";
 const SESSION_SECONDS = 30 * 24 * 60 * 60;
 const ROBLOX_USER_CACHE_MS = 5 * 60 * 1_000;
 const ROBLOX_USER_CACHE_LIMIT = 250;
-const numericId = z.string().regex(/^\d{1,20}$/);
+const numericId = z.string().regex(/^[1-9]\d{0,19}$/);
 const robloxUsername = z.string().trim().min(3).max(20).regex(/^[A-Za-z0-9_]+$/);
 const startSchema = z.object({
-  intent: z.enum(["login", "claim"]).default("login"),
+  intent: z.enum(["login", "claim", "place_access"]).default("login"),
   universeId: numericId.optional(),
+  projectId: z.uuid().optional(),
+  targetUniverseId: numericId.optional(),
 });
 const callbackSchema = z.object({
   code: z.string().min(1).optional(),
@@ -305,10 +315,46 @@ export async function registerAccountRoutes(
 ): Promise<void> {
   app.get("/v1/auth/roblox/start", async (request, reply) => {
     if (!oauth) throw new ReadApiError(503, "oauth_not_configured", "Roblox sign-in is not configured yet.");
-    const { intent, universeId } = startSchema.parse(request.query);
+    const { intent, universeId, projectId, targetUniverseId } =
+      startSchema.parse(request.query);
     const existingUser = await findReadUserForRequest(pool, request);
     if (intent === "claim" && (!existingUser || !universeId)) {
       throw new ReadApiError(401, "claim_sign_in_required", "Sign in before linking an experience.");
+    }
+    if (
+      intent === "place_access" &&
+      (!existingUser || !projectId || !targetUniverseId)
+    ) {
+      throw new ReadApiError(
+        401,
+        "place_access_sign_in_required",
+        "Sign in and select a Trace project before connecting place access.",
+      );
+    }
+    if (intent === "place_access") {
+      if (!oauth.tokenEncryptionKey) {
+        throw new ReadApiError(
+          503,
+          "roblox_place_access_not_configured",
+          "Encrypted Roblox place access is not configured on this server.",
+        );
+      }
+      const membership = await pool.query<{ role: string }>(
+        `SELECT role
+         FROM project_memberships
+         WHERE user_id = $1 AND project_id = $2`,
+        [existingUser!.id, projectId!],
+      );
+      if (
+        membership.rows[0]?.role !== "owner" &&
+        membership.rows[0]?.role !== "admin"
+      ) {
+        throw new ReadApiError(
+          403,
+          "project_role_forbidden",
+          "Your project role does not allow this action.",
+        );
+      }
     }
 
     const state = randomToken(32);
@@ -320,9 +366,22 @@ export async function registerAccountRoutes(
     await pool.query(
       `INSERT INTO roblox_oauth_flows (
          state_hash, browser_binding_hash, user_id, intent, universe_id,
-         code_verifier, nonce, expires_at
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, now() + INTERVAL '10 minutes')`,
-      [hash(state), hash(browserBinding), intent === "claim" ? existingUser!.id : existingUser?.id ?? null, intent, universeId ?? null, verifier, nonce],
+         project_id, target_universe_id, code_verifier, nonce, expires_at
+       ) VALUES (
+         $1, $2, $3, $4, $5, $6, $7, $8, $9,
+         now() + INTERVAL '10 minutes'
+       )`,
+      [
+        hash(state),
+        hash(browserBinding),
+        intent === "login" ? existingUser?.id ?? null : existingUser!.id,
+        intent,
+        intent === "claim" ? universeId! : null,
+        intent === "place_access" ? projectId! : null,
+        intent === "place_access" ? targetUniverseId! : null,
+        verifier,
+        nonce,
+      ],
     );
     reply.setCookie("trace_oauth_binding", browserBinding, {
       path: oauthCallbackCookiePath(oauth),
@@ -331,11 +390,17 @@ export async function registerAccountRoutes(
     });
 
     const authorization = new URL(`${OAUTH_BASE}/authorize`);
+    const scope =
+      intent === "place_access"
+        ? ROBLOX_PLACE_OAUTH_SCOPES.join(" ")
+        : intent === "claim"
+          ? "openid profile universe:read"
+          : "openid profile";
     authorization.search = new URLSearchParams({
       client_id: oauth.clientId,
       redirect_uri: oauth.redirectUri,
       response_type: "code",
-      scope: intent === "claim" ? "openid profile universe:read" : "openid profile",
+      scope,
       state,
       nonce,
       code_challenge: challenge,
@@ -354,7 +419,8 @@ export async function registerAccountRoutes(
     const flowResult = await pool.query<OAuthFlow>(
       `DELETE FROM roblox_oauth_flows
        WHERE state_hash = $1 AND expires_at > now()
-       RETURNING browser_binding_hash, user_id, intent, universe_id, code_verifier`,
+       RETURNING browser_binding_hash, user_id, intent, universe_id,
+                 project_id, target_universe_id, code_verifier`,
       [hash(query.state)],
     );
     const flow = flowResult.rows[0];
@@ -375,7 +441,9 @@ export async function registerAccountRoutes(
     try {
       const tokens = await robloxTokenRequest<{
         access_token: string;
+        expires_in?: number;
         refresh_token?: string;
+        scope?: string;
       }>(oauth, {
         grant_type: "authorization_code",
         code: query.code,
@@ -391,19 +459,38 @@ export async function registerAccountRoutes(
       };
       const userId = await upsertRobloxUser(pool, flow.user_id, profile);
 
-      if (flow.intent === "claim") {
-        if (!flow.user_id || userId !== flow.user_id || !flow.universe_id) {
+      if (flow.intent !== "login") {
+        if (!flow.user_id || userId !== flow.user_id) {
           throw new ReadApiError(403, "claim_account_mismatch", "Use the same Roblox account that is signed in to Trace.");
+        }
+      }
+
+      if (flow.intent === "claim" || flow.intent === "place_access") {
+        const targetUniverseId =
+          flow.intent === "claim"
+            ? flow.universe_id
+            : flow.target_universe_id;
+        if (!targetUniverseId) {
+          throw new ReadApiError(
+            400,
+            "oauth_flow_invalid",
+            "The Roblox authorization flow is missing its target experience.",
+          );
         }
         const resources = await robloxFormRequest<{
           resource_infos?: Array<{ resources?: { universe?: { ids?: Array<string | number> } } }>;
         }>(oauth, "token/resources", { token: tokens.access_token });
         const allowed = resources.resource_infos?.some((info) =>
-          info.resources?.universe?.ids?.some((id) => String(id) === flow.universe_id),
+          info.resources?.universe?.ids?.some(
+            (id) => String(id) === targetUniverseId,
+          ),
         );
         if (!allowed) {
           throw new ReadApiError(403, "universe_not_authorized", "Roblox did not grant access to that experience.");
         }
+      }
+
+      if (flow.intent === "claim") {
         await pool.query(
           `INSERT INTO verified_universe_claims (user_id, universe_id, expires_at)
            VALUES ($1, $2, now() + INTERVAL '15 minutes')
@@ -413,17 +500,74 @@ export async function registerAccountRoutes(
         );
       }
 
+      if (flow.intent === "place_access") {
+        if (
+          !flow.project_id ||
+          !flow.target_universe_id ||
+          !tokens.refresh_token
+        ) {
+          throw new ReadApiError(
+            502,
+            "roblox_refresh_token_missing",
+            "Roblox did not return the long-lived authorization required for place access.",
+          );
+        }
+        const membership = await pool.query<{ role: string }>(
+          `SELECT role
+           FROM project_memberships
+           WHERE user_id = $1 AND project_id = $2`,
+          [userId, flow.project_id],
+        );
+        if (
+          membership.rows[0]?.role !== "owner" &&
+          membership.rows[0]?.role !== "admin"
+        ) {
+          throw new ReadApiError(
+            403,
+            "project_role_forbidden",
+            "Your project role no longer allows this action.",
+          );
+        }
+        const rootPlaceId = await resolveRootPlaceId(
+          tokens.access_token,
+          flow.target_universe_id,
+        );
+        const scopes = (tokens.scope ?? ROBLOX_PLACE_OAUTH_SCOPES.join(" "))
+          .split(/\s+/)
+          .filter(Boolean);
+        await saveRobloxPlaceGrant(pool, oauth, {
+          accessToken: tokens.access_token,
+          accessTokenExpiresIn: tokens.expires_in ?? 899,
+          projectId: flow.project_id,
+          refreshToken: tokens.refresh_token,
+          robloxUserId: profile.sub,
+          rootPlaceId,
+          scopes,
+          targetUniverseId: flow.target_universe_id,
+          userId,
+        });
+      }
+
       const sessionToken = await createWebSession(pool, userId);
       setSessionCookie(reply, sessionToken, oauth);
-      if (tokens.refresh_token) {
+      if (tokens.refresh_token && flow.intent !== "place_access") {
         void robloxFormRequest(oauth, "token/revoke", { token: tokens.refresh_token }).catch(() => undefined);
       }
       const destination = new URL(oauth.webOrigin);
-      if (flow.intent === "claim") {
+      if (flow.intent === "claim" || flow.intent === "place_access") {
         destination.pathname = "/games";
         destination.searchParams.set("manage", "games");
-        destination.searchParams.set("claim", "verified");
-        destination.searchParams.set("universeId", flow.universe_id!);
+        if (flow.intent === "claim") {
+          destination.searchParams.set("claim", "verified");
+          destination.searchParams.set("universeId", flow.universe_id!);
+        } else {
+          destination.searchParams.set("placeAccess", "connected");
+          destination.searchParams.set("projectId", flow.project_id!);
+          destination.searchParams.set(
+            "targetUniverseId",
+            flow.target_universe_id!,
+          );
+        }
       } else {
         destination.pathname = "/dashboard";
         destination.searchParams.set("signedIn", "true");
