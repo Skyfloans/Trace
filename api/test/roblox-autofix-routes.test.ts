@@ -21,6 +21,64 @@ function pluginSession() {
   };
 }
 
+test("plugin autofix inbox returns at most the current 15 requests", async () => {
+  const proposals = Array.from({ length: 20 }, (_, index) => ({
+    id: `60000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`,
+    run_id: runId,
+    status: "queued",
+    priority_rank: index + 1,
+    ai_category: "high",
+    title: null,
+    summary: null,
+    confidence: null,
+    risk: null,
+    failure_reason: null,
+    created_at: "2026-07-28T21:00:00.000Z",
+    updated_at: "2026-07-28T21:00:00.000Z",
+    normalized_message: `Queued error ${index + 1}`,
+    source_script: null,
+    level: "error",
+    source: "server",
+    event_count: 1,
+    file_count: 0,
+  }));
+  const pool = {
+    query: async (sql: string, values: unknown[] = []) => {
+      if (sql.includes("UPDATE roblox_plugin_credentials credentials")) {
+        return { rows: [pluginSession()], rowCount: 1 };
+      }
+      if (sql.includes("FROM roblox_autofix_runs")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("FROM roblox_autofix_proposals proposal")) {
+        assert.match(sql, /LIMIT \$2/);
+        assert.deepEqual(values, [projectId, 15]);
+        return { rows: proposals, rowCount: proposals.length };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "https://tracestack.gg",
+    null,
+    pool,
+    null,
+    { available: true, model: "openai/gpt-5.4-nano" },
+  );
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/plugin-autofix/proposals",
+    headers: { authorization: `Bearer ${"t".repeat(43)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().proposals.length, 15);
+  assert.equal(response.json().proposals[14].priorityRank, 15);
+  await app.close();
+});
+
 test("plugin autofix queues at most 15 classified bugs in critical-first order", async () => {
   let candidateSql = "";
   let candidateLimit: unknown;

@@ -41,6 +41,7 @@ local FONT = Enum.Font.Gotham
 local FONT_MEDIUM = Enum.Font.GothamMedium
 local FONT_BOLD = Enum.Font.GothamBold
 local MONO = Enum.Font.RobotoMono
+local MAX_VISIBLE_PROPOSALS = 15
 
 local function addCorner(parent: Instance, radius: number)
 	local corner = Instance.new("UICorner")
@@ -796,6 +797,7 @@ function Widget:_renderReviews(palette: Palette)
 	end
 
 	for index, proposal in reviews.proposals do
+		if index > MAX_VISIBLE_PROPOSALS then break end
 		createProposalCard(self.content, palette, proposal, 50 + index, self.callbacks.onOpenProposal)
 	end
 end

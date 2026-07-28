@@ -73,8 +73,8 @@ export async function registerRobloxAutofixRoutes(
            END,
            proposal.created_at DESC,
            proposal.priority_rank
-         LIMIT 100`,
-        [session.project_id],
+         LIMIT $2`,
+        [session.project_id, MAX_AUTOFIX_PROPOSALS],
       ),
     ]);
     noStore(reply);
@@ -94,27 +94,29 @@ export async function registerRobloxAutofixRoutes(
             createdAt: iso(run.created_at),
           }
         : null,
-      proposals: proposalResult.rows.map((proposal) => ({
-        id: proposal.id,
-        runId: proposal.run_id,
-        status: proposal.status,
-        priorityRank: Number(proposal.priority_rank),
-        category: proposal.ai_category,
-        title: proposal.title,
-        summary: proposal.summary,
-        confidence:
-          proposal.confidence === null ? null : Number(proposal.confidence),
-        risk: proposal.risk,
-        failureReason: proposal.failure_reason,
-        message: proposal.normalized_message,
-        sourceScript: proposal.source_script,
-        severity: proposal.level,
-        side: proposal.source,
-        eventCount: Number(proposal.event_count),
-        fileCount: Number(proposal.file_count),
-        createdAt: iso(proposal.created_at),
-        updatedAt: iso(proposal.updated_at),
-      })),
+      proposals: proposalResult.rows
+        .slice(0, MAX_AUTOFIX_PROPOSALS)
+        .map((proposal) => ({
+          id: proposal.id,
+          runId: proposal.run_id,
+          status: proposal.status,
+          priorityRank: Number(proposal.priority_rank),
+          category: proposal.ai_category,
+          title: proposal.title,
+          summary: proposal.summary,
+          confidence:
+            proposal.confidence === null ? null : Number(proposal.confidence),
+          risk: proposal.risk,
+          failureReason: proposal.failure_reason,
+          message: proposal.normalized_message,
+          sourceScript: proposal.source_script,
+          severity: proposal.level,
+          side: proposal.source,
+          eventCount: Number(proposal.event_count),
+          fileCount: Number(proposal.file_count),
+          createdAt: iso(proposal.created_at),
+          updatedAt: iso(proposal.updated_at),
+        })),
     };
   });
 
