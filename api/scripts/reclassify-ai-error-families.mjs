@@ -18,15 +18,17 @@ try {
   await client.query("SET lock_timeout = '5s'");
   await client.query("SET statement_timeout = '5min'");
 
+  let groupCursor = "00000000-0000-0000-0000-000000000000";
   while (true) {
     const keyed = await client.query(
       `WITH candidates AS MATERIALIZED (
          SELECT id
          FROM display_error_groups
-         WHERE ai_family_key IS NULL
+         WHERE id > $1::uuid
+           AND ai_family_key IS NULL
            AND level IN ('error', 'warning')
          ORDER BY id
-         LIMIT $1
+         LIMIT $2
        )
        UPDATE display_error_groups groups
        SET ai_family_key = ai_error_family_key(
@@ -35,15 +37,29 @@ try {
              groups.normalized_message
            )
        FROM candidates
-       WHERE groups.id = candidates.id`,
-      [batchSize],
+       WHERE groups.id = candidates.id
+       RETURNING groups.id`,
+      [groupCursor, batchSize],
     );
     const count = keyed.rowCount ?? 0;
     keyedGroups += count;
+    if (count > 0) {
+      groupCursor = String(
+        keyed.rows.reduce(
+          (maximum, row) => (
+              String(row.id).localeCompare(maximum) > 0
+                ? String(row.id)
+                : maximum
+            ),
+          groupCursor,
+        ),
+      );
+    }
     console.log(JSON.stringify({
       phase: "family_keys",
       count,
       keyedGroups,
+      cursor: groupCursor,
     }));
     if (count < batchSize) break;
   }
