@@ -7,6 +7,7 @@ import {
   findDiscoveryScripts,
   findTargetScript,
   queueScheduledAutofixRuns,
+  recoverStaleAutofixWork,
   validateRootCauseChange,
 } from "../src/roblox-autofix.js";
 import {
@@ -427,4 +428,46 @@ test("the ten-minute scheduler only fills vacancies below 15 unresolved requests
   assert.equal(candidateLimit, 4);
   assert.equal(runCapacity, 4);
   assert.equal(inserted, 4);
+});
+
+test("the autofix worker requeues processing proposals after their lease expires", async () => {
+  const runIds: unknown[] = [];
+  const query = async (sql: string, values: unknown[] = []) => {
+    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("UPDATE roblox_autofix_proposals proposal") &&
+      sql.includes("proposal.status = 'processing'")
+    ) {
+      assert.deepEqual(values, [120_000]);
+      assert.match(sql, /INTERVAL '1 millisecond'/);
+      return {
+        rows: [
+          { run_id: "50000000-0000-4000-8000-000000000001" },
+          { run_id: "50000000-0000-4000-8000-000000000001" },
+        ],
+        rowCount: 2,
+      };
+    }
+    if (
+      sql.includes("UPDATE roblox_autofix_runs") &&
+      sql.includes("status = 'queued'")
+    ) {
+      runIds.push(...values);
+      return { rows: [], rowCount: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const client = { query, release: () => undefined } as unknown as PoolClient;
+  const pool = {
+    connect: async () => client,
+  } as unknown as Pool;
+
+  const recovered = await recoverStaleAutofixWork(pool);
+
+  assert.equal(recovered, 2);
+  assert.deepEqual(runIds, [[
+    "50000000-0000-4000-8000-000000000001",
+  ]]);
 });

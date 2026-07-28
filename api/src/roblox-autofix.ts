@@ -17,6 +17,8 @@ const AUTOFIX_SYSTEM_PROMPT = readFileSync(
 
 export const MAX_AUTOFIX_PROPOSALS = 15;
 export const AUTOFIX_SCHEDULE_INTERVAL_MS = 10 * 60 * 1_000;
+export const AUTOFIX_PROCESSING_LEASE_MS = 2 * 60 * 1_000;
+const AUTOFIX_RECOVERY_INTERVAL_MS = 60 * 1_000;
 const MAX_CHANGED_SCRIPTS = 3;
 const MAX_CONTEXT_SCRIPTS = 8;
 const MAX_SCRIPT_CHARS = 60_000;
@@ -577,6 +579,46 @@ async function claimRun(pool: Pool): Promise<AutofixRun | null> {
   }
 }
 
+export async function recoverStaleAutofixWork(
+  pool: Pool,
+  leaseMs = AUTOFIX_PROCESSING_LEASE_MS,
+): Promise<number> {
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const stale = await client.query<{ run_id: string }>(
+      `UPDATE roblox_autofix_proposals proposal
+       SET status = 'queued', failure_reason = NULL, updated_at = now()
+       FROM roblox_autofix_runs run
+       WHERE proposal.run_id = run.id
+         AND run.status = 'processing'
+         AND proposal.status = 'processing'
+         AND proposal.updated_at <
+             now() - ($1::double precision * INTERVAL '1 millisecond')
+       RETURNING proposal.run_id`,
+      [leaseMs],
+    );
+    const runIds = [...new Set(stale.rows.map((row) => row.run_id))];
+    if (runIds.length > 0) {
+      await client.query(
+        `UPDATE roblox_autofix_runs
+         SET status = 'queued', started_at = NULL, finished_at = NULL,
+             last_error = NULL
+         WHERE id = ANY($1::uuid[])
+           AND status = 'processing'`,
+        [runIds],
+      );
+    }
+    await client.query("COMMIT");
+    return stale.rowCount ?? stale.rows.length;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function loadProposals(
   pool: Pool,
   runId: string,
@@ -1121,9 +1163,20 @@ export function startRobloxAutofixWorker(
   let stopped = false;
   let timer: NodeJS.Timeout | undefined;
   let active: Promise<void> | undefined;
+  let nextRecoveryAt = 0;
 
   const poll = async (): Promise<void> => {
     if (stopped) return;
+    if (Date.now() >= nextRecoveryAt) {
+      const recovered = await recoverStaleAutofixWork(options.pool);
+      nextRecoveryAt = Date.now() + AUTOFIX_RECOVERY_INTERVAL_MS;
+      if (recovered > 0) {
+        options.logger?.warn(
+          { proposals: recovered },
+          "Roblox autofix worker recovered stale processing work",
+        );
+      }
+    }
     const run = await claimRun(options.pool);
     if (run) {
       try {

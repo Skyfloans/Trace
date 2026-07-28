@@ -67,7 +67,9 @@ a dark unified diff with old/new line numbers. Requests without a concrete
 script edit are shown as diagnostics instead of empty code reviews; they can be
 retried with the bounded cross-script investigation or dismissed. Reviewable
 proposals can also be regenerated when the displayed diff addresses a symptom
-instead of the root cause.
+instead of the root cause. Processing work has a two-minute lease; if a deploy
+or worker interruption leaves a request stuck, the server automatically
+requeues it.
 
 Before accepting, the plugin resolves every proposed path and reads the current
 editor source with `ScriptEditorService:GetEditorSource()`. If the source still
