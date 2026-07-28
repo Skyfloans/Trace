@@ -97,9 +97,12 @@ CREATE TABLE IF NOT EXISTS ai_error_family_classifications (
     prompt_version INTEGER NOT NULL
 );
 
-COMMIT;
-
-CREATE INDEX CONCURRENTLY IF NOT EXISTS
+-- This partial index is empty when the migration first adds ai_family_key, so
+-- creating it transactionally is fast and keeps programmatic migration runs
+-- compatible with PostgreSQL's one-request transaction handling.
+CREATE INDEX IF NOT EXISTS
     display_error_groups_ai_family_key_idx
     ON display_error_groups (ai_family_key)
     WHERE ai_family_key IS NOT NULL;
+
+COMMIT;
