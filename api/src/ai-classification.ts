@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { z } from "zod";
 import { withTransaction } from "./db.js";
+import {
+  ERROR_CLASSIFICATION_PROMPT_VERSION,
+  ERROR_CLASSIFICATION_SYSTEM_PROMPT,
+} from "./error-classification-prompt.js";
 
 export const ERROR_AI_CATEGORIES = [
   "critical",
@@ -80,8 +84,9 @@ const resultEnvelopeSchema = z.object({
   })),
 });
 
-const promptVersion = 2;
+const feedbackPromptVersion = 2;
 const maxAttempts = 5;
+const maxReliableBatchSize = 12;
 
 function parseStructuredContent(content: string): unknown {
   const firstBrace = content.indexOf("{");
@@ -98,15 +103,7 @@ function categoriesFor(target: ClassificationTarget): readonly string[] {
 
 function systemPrompt(target: ClassificationTarget): string {
   if (target === "error") {
-    return `You classify normalized Roblox and Luau telemetry groups for a game developer dashboard.
-Use Roblox/Luau domain knowledge: understand Roblox services and engine behavior (including DataStoreService, MarketplaceService, MemoryStoreService, MessagingService, animation tracks, RemoteEvents, HTTP requests, replication, streaming, and client/server boundaries), Luau stack/source conventions, and common Roblox platform throttling or transient warnings. Distinguish developer print/warn diagnostics from thrown faults. Do not call an engine warning critical merely because the incoming telemetry level says error or warning.
-Choose exactly one priority:
-- critical: likely outage, data loss, security issue, purchase failure at scale, or a core loop unusable for many players
-- high: clear actionable bug with major player impact, but not a broad outage
-- medium: actionable bug with limited impact or a meaningful performance/reliability issue
-- low: minor defect, warning, edge case, or low-impact issue
-- not_a_bug: intentional developer logging, expected platform behavior, benign lifecycle noise, or informational text
-Judge the normalized group, not individual IDs. Treat the provided severity as evidence, not truth. Be conservative with critical. Return a reason of at most 12 words without exposing chain-of-thought.`;
+    return ERROR_CLASSIFICATION_SYSTEM_PROMPT;
   }
   return `You classify player-submitted Roblox game feedback for a developer dashboard.
 Choose exactly one category:
@@ -116,6 +113,12 @@ Choose exactly one category:
 - general: praise, greetings, random text, neutral remarks, vague dislike, insults, or anything with no substantive and actionable product signal
 Do not classify unproductive negativity as critique. For example, "this is so ugly" and "I hate it" are general unless the message explains what is wrong with a specific design or experience.
 When a message both reports breakage and suggests a fix, prefer bug_report. Return a reason of at most 12 words without exposing chain-of-thought.`;
+}
+
+function promptVersionFor(target: ClassificationTarget): number {
+  return target === "error"
+    ? ERROR_CLASSIFICATION_PROMPT_VERSION
+    : feedbackPromptVersion;
 }
 
 function responseFormat(target: ClassificationTarget, itemCount: number) {
@@ -393,6 +396,7 @@ async function applyCachedErrorClassifications(
          FROM display_error_groups groups
          JOIN ai_error_family_classifications cached
            ON cached.family_key = groups.ai_family_key
+          AND cached.prompt_version >= $2
          WHERE groups.id = ANY($1::uuid[])
        )
        UPDATE display_error_groups groups
@@ -411,7 +415,7 @@ async function applyCachedErrorClassifications(
            groups.ai_status <> 'classified'
            OR groups.ai_prompt_version < cached.prompt_version
          )`,
-      [ids],
+      [ids, ERROR_CLASSIFICATION_PROMPT_VERSION],
     );
     await client.query(
       `WITH families AS MATERIALIZED (
@@ -419,6 +423,7 @@ async function applyCachedErrorClassifications(
          FROM display_error_groups groups
          JOIN ai_error_family_classifications cached
            ON cached.family_key = groups.ai_family_key
+          AND cached.prompt_version >= $2
          WHERE groups.id = ANY($1::uuid[])
        )
        UPDATE display_error_rollups_hourly rollups
@@ -430,7 +435,7 @@ async function applyCachedErrorClassifications(
          ON cached.family_key = families.ai_family_key
        WHERE rollups.display_group_id = groups.id
          AND rollups.ai_category IS DISTINCT FROM cached.category`,
-      [ids],
+      [ids, ERROR_CLASSIFICATION_PROMPT_VERSION],
     );
     await client.query(
       `WITH families AS MATERIALIZED (
@@ -438,6 +443,7 @@ async function applyCachedErrorClassifications(
          FROM display_error_groups groups
          JOIN ai_error_family_classifications cached
            ON cached.family_key = groups.ai_family_key
+          AND cached.prompt_version >= $2
          WHERE groups.id = ANY($1::uuid[])
        )
        DELETE FROM ai_classification_jobs jobs
@@ -445,7 +451,7 @@ async function applyCachedErrorClassifications(
        WHERE jobs.target_type = 'error'
          AND jobs.target_id = groups.id
          AND groups.ai_family_key = families.ai_family_key`,
-      [ids],
+      [ids, ERROR_CLASSIFICATION_PROMPT_VERSION],
     );
   });
 }
@@ -519,7 +525,14 @@ async function applyResults(
            classified_at = EXCLUDED.classified_at,
            model = EXCLUDED.model,
            prompt_version = EXCLUDED.prompt_version`,
-      [ids, categories, confidences, reasons, model, promptVersion],
+      [
+        ids,
+        categories,
+        confidences,
+        reasons,
+        model,
+        promptVersionFor(target),
+      ],
     );
     await client.query(
       `WITH families AS MATERIALIZED (
@@ -611,7 +624,7 @@ async function applyResults(
         translated,
         translatedMessages,
         model,
-        promptVersion,
+        promptVersionFor(target),
       ],
     );
   }
@@ -726,7 +739,10 @@ export function startAIClassificationWorker(
 ): () => Promise<void> {
   const controller = new AbortController();
   const workerId = randomUUID();
-  const batchSize = Math.max(1, Math.min(options.batchSize ?? 12, 50));
+  const batchSize = Math.max(
+    1,
+    Math.min(options.batchSize ?? maxReliableBatchSize, maxReliableBatchSize),
+  );
   const pollIntervalMs = Math.max(250, options.pollIntervalMs ?? 1_500);
   const logger = options.logger ?? console;
 

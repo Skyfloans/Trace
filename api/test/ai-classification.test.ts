@@ -41,8 +41,12 @@ test("OpenRouter classification uses the Roblox Luau rubric and strict output", 
   assert.equal(result[0]?.category, "medium");
   assert.equal(requestBody?.model, "openai/gpt-5.4-nano");
   const messages = requestBody?.messages as Array<{ content: string }>;
-  assert.match(messages[0]?.content ?? "", /Roblox and Luau/);
+  assert.match(messages[0]?.content ?? "", /Roblox production-log classifier/);
   assert.match(messages[0]?.content ?? "", /DataStoreService/);
+  assert.match(messages[0]?.content ?? "", /Request was added to queue/);
+  assert.match(messages[0]?.content ?? "", /TopbarPlus/);
+  assert.match(messages[0]?.content ?? "", /Raw occurrence count is not blast radius/);
+  assert.match(messages[0]?.content ?? "", /return only key, category/);
   assert.deepEqual(
     (requestBody?.response_format as { type: string }).type,
     "json_schema",
@@ -61,6 +65,10 @@ test("OpenRouter classification uses the Roblox Luau rubric and strict output", 
     1,
   );
   assert.match(messages[1]?.content ?? "", /one for every key/);
+  assert.doesNotMatch(
+    JSON.stringify(requestBody?.response_format),
+    /needs_context|recommended_action|bug_type/,
+  );
 });
 
 test("feedback classification translates non-English text and requires useful critique", async () => {

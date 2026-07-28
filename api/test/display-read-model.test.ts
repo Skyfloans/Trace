@@ -264,6 +264,14 @@ test("AI error classifications are cached once per semantic family", async () =>
     new URL("../scripts/backfill-ai-error-families.mjs", import.meta.url),
     "utf8",
   );
+  const reclassification = await readFile(
+    new URL("../scripts/reclassify-ai-error-families.mjs", import.meta.url),
+    "utf8",
+  );
+  const prompt = await readFile(
+    new URL("../src/error-classification-prompt.ts", import.meta.url),
+    "utf8",
+  );
 
   assert.match(migration, /fingerprint TEXT PRIMARY KEY/);
   assert.match(reconciliation, /DISTINCT ON \(groups\.fingerprint\)/);
@@ -273,8 +281,14 @@ test("AI error classifications are cached once per semantic family", async () =>
   assert.match(familyBackfill, /DISTINCT ON \(groups\.ai_family_key\)/);
   assert.match(familyBackfill, /SET priority = 10/);
   assert.match(worker, /JOIN ai_error_family_classifications cached/);
+  assert.match(worker, /cached\.prompt_version >= \$2/);
   assert.match(worker, /groups\.ai_family_key = families\.ai_family_key/);
   assert.match(worker, /target_type = 'feedback'[\s\S]+OR priority >= 10/);
+  assert.match(prompt, /ERROR_CLASSIFICATION_PROMPT_VERSION = 3/);
+  assert.match(reclassification, /AI_ERROR_PROMPT_VERSION \?\? 3/);
+  assert.match(reclassification, /COALESCE\(cached\.prompt_version, 0\) < \$2/);
+  assert.match(reclassification, /SET ai_status = 'pending'/);
+  assert.match(reclassification, /ON CONFLICT \(target_type, target_id\) DO UPDATE/);
 });
 
 test("INDEX datastore groups are remapped across every fast read model", async () => {
