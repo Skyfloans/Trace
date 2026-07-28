@@ -237,7 +237,7 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
   assert.match(worker, /ai_translated = input\.translated/);
 });
 
-test("AI error classifications are cached once per normalized fingerprint", async () => {
+test("AI error classifications are cached once per semantic family", async () => {
   const migration = await readFile(
     new URL(
       "../../database/migrations/022_ai_error_classification_cache.sql",
@@ -253,12 +253,27 @@ test("AI error classifications are cached once per normalized fingerprint", asyn
     new URL("../src/ai-classification.ts", import.meta.url),
     "utf8",
   );
+  const familyMigration = await readFile(
+    new URL(
+      "../../database/migrations/024_ai_error_families.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const familyBackfill = await readFile(
+    new URL("../scripts/backfill-ai-error-families.mjs", import.meta.url),
+    "utf8",
+  );
 
   assert.match(migration, /fingerprint TEXT PRIMARY KEY/);
   assert.match(reconciliation, /DISTINCT ON \(groups\.fingerprint\)/);
   assert.match(reconciliation, /groups\.last_seen_at >= now\(\) - interval '3 days'/);
-  assert.match(worker, /JOIN ai_error_classifications cached/);
-  assert.match(worker, /groups\.fingerprint = fingerprints\.fingerprint/);
+  assert.match(familyMigration, /normalize_ai_error_family/);
+  assert.match(familyMigration, /ai_error_family_classifications/);
+  assert.match(familyBackfill, /DISTINCT ON \(groups\.ai_family_key\)/);
+  assert.match(familyBackfill, /SET priority = 10/);
+  assert.match(worker, /JOIN ai_error_family_classifications cached/);
+  assert.match(worker, /groups\.ai_family_key = families\.ai_family_key/);
   assert.match(worker, /target_type = 'feedback'[\s\S]+OR priority >= 10/);
 });
 

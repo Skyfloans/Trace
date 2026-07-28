@@ -465,6 +465,11 @@ async function insertEvents(
          source,
          display_message AS normalized_message,
          display_source_script AS source_script,
+         ai_error_family_key(
+           source,
+           level,
+           display_message
+         ) AS ai_family_key,
          MIN(first_seen_at) AS first_seen_at,
          MAX(last_seen_at) AS last_seen_at
        FROM input
@@ -473,11 +478,12 @@ async function insertEvents(
          level,
          source,
          display_message,
-         display_source_script
+         display_source_script,
+         ai_error_family_key(source, level, display_message)
      ), display_upserted AS (
        INSERT INTO display_error_groups (
          project_id, fingerprint, level, source, normalized_message,
-         source_script, first_seen_at, last_seen_at
+         source_script, ai_family_key, first_seen_at, last_seen_at
        )
        SELECT
          $1,
@@ -486,6 +492,7 @@ async function insertEvents(
          display_input.source::log_source,
          display_input.normalized_message,
          display_input.source_script,
+         display_input.ai_family_key,
          display_input.first_seen_at,
          display_input.last_seen_at
        FROM display_input
@@ -502,6 +509,10 @@ async function insertEvents(
            source_script = COALESCE(
              display_error_groups.source_script,
              EXCLUDED.source_script
+           ),
+           ai_family_key = COALESCE(
+             display_error_groups.ai_family_key,
+             EXCLUDED.ai_family_key
            )
        RETURNING id, fingerprint
      ), display_groups AS (

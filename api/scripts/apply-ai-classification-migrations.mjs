@@ -17,6 +17,10 @@ const migration023 = await readFile(
   new URL("../../database/migrations/023_feedback_translation.sql", import.meta.url),
   "utf8",
 );
+const migration024 = await readFile(
+  new URL("../../database/migrations/024_ai_error_families.sql", import.meta.url),
+  "utf8",
+);
 const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 const validateOnly = process.argv.includes("--validate-only");
@@ -48,6 +52,7 @@ try {
   }
   await client.query(migration021);
   await client.query(migration023);
+  await client.query(migration024);
   const verification = await client.query(`
     SELECT
       EXISTS (
@@ -71,6 +76,15 @@ try {
           AND table_name = 'feedback'
           AND column_name = 'ai_translated'
       ) AS feedback_translation_ready,
+      EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'display_error_groups'
+          AND column_name = 'ai_family_key'
+      ) AS error_family_key_ready,
+      to_regclass('public.ai_error_family_classifications')
+        IS NOT NULL AS error_family_cache_ready,
       to_regclass('public.display_error_groups_ai_category_recent_idx')
         IS NOT NULL AS error_index_ready,
       to_regclass('public.display_error_rollups_ai_filter_idx')

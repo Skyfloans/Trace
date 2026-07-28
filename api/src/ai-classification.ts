@@ -32,6 +32,7 @@ type ClassificationInput = {
   id: string;
   type: ClassificationTarget;
   fingerprint?: string;
+  familyKey?: string;
   message: string;
   severity?: string;
   side?: string;
@@ -337,6 +338,14 @@ async function loadInputs(
       `SELECT
          id,
          fingerprint,
+         COALESCE(
+           ai_family_key,
+           ai_error_family_key(
+             source::text,
+             level::text,
+             normalized_message
+           )
+         ) AS ai_family_key,
          normalized_message AS message,
          level::text AS severity,
          source::text AS side,
@@ -350,6 +359,7 @@ async function loadInputs(
       id: String(row.id),
       type: target,
       fingerprint: String(row.fingerprint),
+      familyKey: String(row.ai_family_key),
       message: String(row.message),
       severity: String(row.severity),
       side: String(row.side),
@@ -378,11 +388,11 @@ async function applyCachedErrorClassifications(
   if (ids.length === 0) return;
   await withTransaction(pool, async (client) => {
     await client.query(
-      `WITH fingerprints AS MATERIALIZED (
-         SELECT DISTINCT groups.fingerprint
+      `WITH families AS MATERIALIZED (
+         SELECT DISTINCT groups.ai_family_key
          FROM display_error_groups groups
-         JOIN ai_error_classifications cached
-           ON cached.fingerprint = groups.fingerprint
+         JOIN ai_error_family_classifications cached
+           ON cached.family_key = groups.ai_family_key
          WHERE groups.id = ANY($1::uuid[])
        )
        UPDATE display_error_groups groups
@@ -393,10 +403,10 @@ async function applyCachedErrorClassifications(
            ai_model = cached.model,
            ai_prompt_version = cached.prompt_version,
            ai_status = 'classified'
-       FROM fingerprints
-       JOIN ai_error_classifications cached
-         ON cached.fingerprint = fingerprints.fingerprint
-       WHERE groups.fingerprint = fingerprints.fingerprint
+       FROM families
+       JOIN ai_error_family_classifications cached
+         ON cached.family_key = families.ai_family_key
+       WHERE groups.ai_family_key = families.ai_family_key
          AND (
            groups.ai_status <> 'classified'
            OR groups.ai_prompt_version < cached.prompt_version
@@ -404,37 +414,37 @@ async function applyCachedErrorClassifications(
       [ids],
     );
     await client.query(
-      `WITH fingerprints AS MATERIALIZED (
-         SELECT DISTINCT groups.fingerprint
+      `WITH families AS MATERIALIZED (
+         SELECT DISTINCT groups.ai_family_key
          FROM display_error_groups groups
-         JOIN ai_error_classifications cached
-           ON cached.fingerprint = groups.fingerprint
+         JOIN ai_error_family_classifications cached
+           ON cached.family_key = groups.ai_family_key
          WHERE groups.id = ANY($1::uuid[])
        )
        UPDATE display_error_rollups_hourly rollups
        SET ai_category = cached.category
        FROM display_error_groups groups
-       JOIN fingerprints
-         ON fingerprints.fingerprint = groups.fingerprint
-       JOIN ai_error_classifications cached
-         ON cached.fingerprint = fingerprints.fingerprint
+       JOIN families
+         ON families.ai_family_key = groups.ai_family_key
+       JOIN ai_error_family_classifications cached
+         ON cached.family_key = families.ai_family_key
        WHERE rollups.display_group_id = groups.id
          AND rollups.ai_category IS DISTINCT FROM cached.category`,
       [ids],
     );
     await client.query(
-      `WITH fingerprints AS MATERIALIZED (
-         SELECT DISTINCT groups.fingerprint
+      `WITH families AS MATERIALIZED (
+         SELECT DISTINCT groups.ai_family_key
          FROM display_error_groups groups
-         JOIN ai_error_classifications cached
-           ON cached.fingerprint = groups.fingerprint
+         JOIN ai_error_family_classifications cached
+           ON cached.family_key = groups.ai_family_key
          WHERE groups.id = ANY($1::uuid[])
        )
        DELETE FROM ai_classification_jobs jobs
-       USING display_error_groups groups, fingerprints
+       USING display_error_groups groups, families
        WHERE jobs.target_type = 'error'
          AND jobs.target_id = groups.id
-         AND groups.fingerprint = fingerprints.fingerprint`,
+         AND groups.ai_family_key = families.ai_family_key`,
       [ids],
     );
   });
@@ -445,7 +455,7 @@ function uniqueNormalizedErrorInputs(
 ): ClassificationInput[] {
   const unique = new Map<string, ClassificationInput>();
   for (const input of inputs) {
-    unique.set(input.fingerprint ?? input.id, input);
+    unique.set(input.familyKey ?? input.fingerprint ?? input.id, input);
   }
   return [...unique.values()];
 }
@@ -477,15 +487,15 @@ async function applyResults(
          ) AS input(id, category, confidence, reason)
        ), decisions AS (
          SELECT
-           groups.fingerprint,
+           groups.ai_family_key AS family_key,
            input.category,
            input.confidence,
            input.reason
          FROM input
          JOIN display_error_groups groups ON groups.id = input.id
        )
-       INSERT INTO ai_error_classifications (
-         fingerprint,
+       INSERT INTO ai_error_family_classifications (
+         family_key,
          category,
          confidence,
          reason,
@@ -494,7 +504,7 @@ async function applyResults(
          prompt_version
        )
        SELECT
-         fingerprint,
+         family_key,
          category,
          confidence,
          reason,
@@ -502,7 +512,7 @@ async function applyResults(
          $5,
          $6
        FROM decisions
-       ON CONFLICT (fingerprint) DO UPDATE
+       ON CONFLICT (family_key) DO UPDATE
        SET category = EXCLUDED.category,
            confidence = EXCLUDED.confidence,
            reason = EXCLUDED.reason,
@@ -512,8 +522,8 @@ async function applyResults(
       [ids, categories, confidences, reasons, model, promptVersion],
     );
     await client.query(
-      `WITH fingerprints AS MATERIALIZED (
-         SELECT DISTINCT groups.fingerprint
+      `WITH families AS MATERIALIZED (
+         SELECT DISTINCT groups.ai_family_key
          FROM display_error_groups groups
          WHERE groups.id = ANY($1::uuid[])
        )
@@ -525,10 +535,10 @@ async function applyResults(
            ai_model = cached.model,
            ai_prompt_version = cached.prompt_version,
            ai_status = 'classified'
-       FROM fingerprints
-       JOIN ai_error_classifications cached
-         ON cached.fingerprint = fingerprints.fingerprint
-       WHERE groups.fingerprint = fingerprints.fingerprint
+       FROM families
+       JOIN ai_error_family_classifications cached
+         ON cached.family_key = families.ai_family_key
+       WHERE groups.ai_family_key = families.ai_family_key
          AND (
            groups.ai_status <> 'classified'
            OR groups.ai_prompt_version < cached.prompt_version
@@ -536,33 +546,33 @@ async function applyResults(
       [ids],
     );
     await client.query(
-      `WITH fingerprints AS MATERIALIZED (
-         SELECT DISTINCT fingerprint
+      `WITH families AS MATERIALIZED (
+         SELECT DISTINCT ai_family_key
          FROM display_error_groups
          WHERE id = ANY($1::uuid[])
        )
        UPDATE display_error_rollups_hourly rollups
        SET ai_category = cached.category
        FROM display_error_groups groups
-       JOIN fingerprints
-         ON fingerprints.fingerprint = groups.fingerprint
-       JOIN ai_error_classifications cached
-         ON cached.fingerprint = fingerprints.fingerprint
+       JOIN families
+         ON families.ai_family_key = groups.ai_family_key
+       JOIN ai_error_family_classifications cached
+         ON cached.family_key = families.ai_family_key
        WHERE rollups.display_group_id = groups.id
          AND rollups.ai_category IS DISTINCT FROM cached.category`,
       [ids],
     );
     await client.query(
-      `WITH fingerprints AS MATERIALIZED (
-         SELECT DISTINCT fingerprint
+      `WITH families AS MATERIALIZED (
+         SELECT DISTINCT ai_family_key
          FROM display_error_groups
          WHERE id = ANY($1::uuid[])
        )
        DELETE FROM ai_classification_jobs jobs
-       USING display_error_groups groups, fingerprints
+       USING display_error_groups groups, families
        WHERE jobs.target_type = 'error'
          AND jobs.target_id = groups.id
-         AND groups.fingerprint = fingerprints.fingerprint`,
+         AND groups.ai_family_key = families.ai_family_key`,
       [ids],
     );
   } else {
