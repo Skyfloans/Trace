@@ -33,6 +33,83 @@ export type VerifiedSession = PluginSession & {
 	token: string,
 }
 
+export type DiffHunk = {
+	lines: { string },
+	newBlock: { string },
+	newLines: number,
+	newStart: number,
+	oldBlock: { string },
+	oldLines: number,
+	oldStart: number,
+}
+
+export type ProposalSummary = {
+	category: "critical" | "high" | "medium" | "low",
+	confidence: number?,
+	createdAt: string,
+	eventCount: number,
+	failureReason: string?,
+	fileCount: number,
+	id: string,
+	message: string,
+	priorityRank: number,
+	risk: "low" | "medium" | "high"?,
+	runId: string,
+	severity: string,
+	side: string,
+	sourceScript: string?,
+	status: string,
+	summary: string?,
+	title: string?,
+	updatedAt: string,
+}
+
+export type ProposalList = {
+	available: boolean,
+	proposals: { ProposalSummary },
+	run: {
+		createdAt: string,
+		error: string?,
+		finishedAt: string?,
+		id: string,
+		inputTokens: number,
+		maxProposals: number,
+		outputTokens: number,
+		startedAt: string?,
+		status: string,
+	}?,
+}
+
+export type ProposalFile = {
+	baseSha256: string,
+	baseSource: string,
+	className: "Script" | "LocalScript" | "ModuleScript",
+	id: string,
+	patch: {
+		hunks: { DiffHunk },
+	},
+	path: string,
+	proposedSource: string,
+}
+
+export type ProposalDetail = {
+	bug: {
+		message: string,
+		severity: string,
+		side: string,
+		sourceScript: string?,
+	},
+	category: "critical" | "high" | "medium" | "low",
+	confidence: number?,
+	failureReason: string?,
+	files: { ProposalFile },
+	id: string,
+	risk: "low" | "medium" | "high"?,
+	status: string,
+	summary: string?,
+	title: string?,
+}
+
 type ApiErrorBody = {
 	error: {
 		code: string?,
@@ -143,6 +220,33 @@ end
 
 function Api.revoke(self: Client, token: string): ApiResponse<any>
 	return self:_request("POST", "/v1/plugin-auth/revoke", nil, token)
+end
+
+function Api.getProposals(self: Client, token: string): ApiResponse<ProposalList>
+	return self:_request("GET", "/v1/plugin-autofix/proposals", nil, token)
+end
+
+function Api.startAutofix(self: Client, token: string): ApiResponse<any>
+	return self:_request("POST", "/v1/plugin-autofix/runs", {
+		limit = 15,
+	}, token)
+end
+
+function Api.getProposal(self: Client, token: string, proposalId: string): ApiResponse<ProposalDetail>
+	return self:_request("GET", "/v1/plugin-autofix/proposals/" .. HttpService:UrlEncode(proposalId), nil, token)
+end
+
+function Api.reviewProposal(
+	self: Client,
+	token: string,
+	proposalId: string,
+	action: "accepted" | "rejected" | "conflict",
+	message: string?
+): ApiResponse<any>
+	return self:_request("POST", "/v1/plugin-autofix/proposals/" .. HttpService:UrlEncode(proposalId) .. "/review", {
+		action = action,
+		message = message,
+	}, token)
 end
 
 return Api

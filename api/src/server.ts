@@ -4,6 +4,7 @@ import { config } from "./config.js";
 import { createPool, withTransaction } from "./db.js";
 import { archiveEligiblePartitions } from "./telemetry-archive.js";
 import { startAIClassificationWorker } from "./ai-classification.js";
+import { startRobloxAutofixWorker } from "./roblox-autofix.js";
 
 // Busy games can legitimately queue many different per-fingerprint advisory
 // locks at once. Keep enough pool headroom that unrelated ingestion does not
@@ -16,6 +17,10 @@ const classificationPool = config.OPENROUTER_API_KEY
       Math.max(2, config.AI_CLASSIFICATION_CONCURRENCY + 1),
     )
   : null;
+const autofixPool =
+  config.OPENROUTER_API_KEY && config.ARCHIVE_STORAGE_PROVIDER
+    ? createPool(config.DATABASE_URL, 2)
+    : null;
 const oauth =
   config.ROBLOX_OAUTH_CLIENT_ID &&
   config.ROBLOX_OAUTH_CLIENT_SECRET &&
@@ -30,15 +35,21 @@ const oauth =
       }
     : null;
 const archiveStorage = createArchiveStorage(config);
+const autofixModel = config.AUTOFIX_MODEL ?? config.OPENROUTER_MODEL;
 const app = await buildApp(
   ingestionPool,
   config.WEB_ORIGIN,
   oauth,
   readPool,
   archiveStorage,
+  {
+    available: Boolean(config.OPENROUTER_API_KEY && archiveStorage),
+    model: autofixModel,
+  },
 );
 let maintenanceTimer: NodeJS.Timeout | undefined;
 let stopClassificationWorkers: (() => Promise<void>) | undefined;
+let stopAutofixWorker: (() => Promise<void>) | undefined;
 
 async function runMaintenance(): Promise<void> {
   await ingestionPool.query("SELECT ensure_occurrence_partitions(3)");
@@ -74,11 +85,13 @@ app.addHook("onClose", async () => {
     clearInterval(maintenanceTimer);
   }
   await stopClassificationWorkers?.();
+  await stopAutofixWorker?.();
   archiveStorage?.close();
   await Promise.all([
     ingestionPool.end(),
     readPool.end(),
     classificationPool?.end(),
+    autofixPool?.end(),
   ]);
 });
 
@@ -130,6 +143,29 @@ try {
   } else {
     app.log.warn(
       "OPENROUTER_API_KEY is not configured; AI classifications are paused",
+    );
+  }
+
+  if (
+    config.OPENROUTER_API_KEY &&
+    archiveStorage &&
+    autofixPool
+  ) {
+    stopAutofixWorker = startRobloxAutofixWorker({
+      pool: autofixPool,
+      storage: archiveStorage,
+      apiKey: config.OPENROUTER_API_KEY,
+      model: autofixModel,
+      webOrigin: config.WEB_ORIGIN,
+      logger: app.log,
+    });
+    app.log.info(
+      { model: autofixModel, maxProposals: 15, concurrency: 1 },
+      "Roblox autofix worker started",
+    );
+  } else {
+    app.log.warn(
+      "OpenRouter or place storage is not configured; Roblox autofix is paused",
     );
   }
 

@@ -70,6 +70,10 @@ export async function buildApp(
   oauth: Omit<RobloxOAuthConfig, "webOrigin"> | null = null,
   readPool: Pool = pool,
   archiveStorage: ArchiveStorage | null = null,
+  autofix: { available: boolean; model: string } = {
+    available: false,
+    model: "openai/gpt-5.4-nano",
+  },
 ): Promise<FastifyInstance> {
   const app = Fastify({
     logger: true,
@@ -215,6 +219,7 @@ export async function buildApp(
     oauth ? { ...oauth, webOrigin } : null,
     archiveStorage,
     webOrigin,
+    autofix,
   );
 
   return app;

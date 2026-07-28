@@ -43,3 +43,24 @@ test("the API image packages the canonical Roblox plugin-pairing migration", asy
 
   assert.equal(packaged, canonical);
 });
+
+test("the API image packages the canonical Roblox autofix migration", async () => {
+  const [canonical, packaged] = await Promise.all([
+    readFile(
+      new URL(
+        "../../database/migrations/027_roblox_autofix.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../scripts/migrations/027_roblox_autofix.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ]);
+
+  assert.equal(packaged, canonical);
+});

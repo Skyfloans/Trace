@@ -1,9 +1,8 @@
 # Trace Autofix Studio plugin
 
-This Rojo project builds the native Roblox Studio surface for Trace Autofix.
-The current slice implements secure website pairing, session restoration, and
-disconnect. Fix lists, script diffs, merge checks, and apply/undo arrive in the
-next slice.
+This Rojo project builds the native Roblox Studio surface for Trace Autofix. It
+implements secure website pairing, a priority fix-request queue,
+pull-request-style script diffs, rejection, and conflict-safe application.
 
 ## Build
 
@@ -15,7 +14,7 @@ rojo build plugin.project.json -o plugin/TraceAutofix.rbxmx
 
 The generated `.rbxmx` contains the plugin `Script` and its `Api`, `Theme`, and
 `Widget` `ModuleScript` children. It does not contain any scripts from the open
-game.
+game or any OpenRouter/Roblox OAuth secrets.
 
 ## Trace icon asset
 
@@ -53,9 +52,24 @@ without the 256-bit client proof.
 
 The widget uses `Studio.Theme:GetColor()` for its native canvas, input, border,
 button, and text colors and rerenders on `Studio.ThemeChanged`. Trace coral is
-reserved for the mark and primary action; mint communicates a verified
-connection. The widget opens docked right at 350×390 and remains usable down to
-300×320.
+reserved for primary actions; mint communicates a verified connection. The
+uploaded Trace PNG has no backing tile. The widget opens docked right at
+440×600 and remains usable down to 340×390.
+
+## Review and apply
+
+Connecting goes directly to the fix-request queue. Preparing fixes is a manual
+action and asks the API for no more than 15 bugs, ordered most critical first.
+Each ready request opens a dark unified diff with old/new line numbers.
+
+Before accepting, the plugin resolves every proposed path and reads the current
+editor source with `ScriptEditorService:GetEditorSource()`. If the source still
+equals the snapshot, the proposed source is used directly. Otherwise each hunk
+must match one unambiguous current block; unrelated newer edits are preserved
+and edits in or around a hunk produce a conflict. Every file is validated
+before writing. Updates use `ScriptEditorService:UpdateSourceAsync()` inside one
+`ChangeHistoryService` recording, so the entire accepted fix is one Studio undo
+action. Trace never publishes the place.
 
 The production API base URL is intentionally the non-secret constant
 `https://api.tracestack.gg`. Local API changes should use a temporary build

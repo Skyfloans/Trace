@@ -102,6 +102,19 @@ POST /v1/plugin-auth/revoke
 credential. Roblox OAuth access and refresh tokens are never exposed through
 this contract.
 
+The same project-scoped plugin credential authorizes Autofix review endpoints:
+
+```text
+GET  /v1/plugin-autofix/proposals
+POST /v1/plugin-autofix/runs
+GET  /v1/plugin-autofix/proposals/{proposalId}
+POST /v1/plugin-autofix/proposals/{proposalId}/review
+```
+
+Starting a run is the explicit cost boundary and selects no more than 15
+classified bugs. Proposal detail includes the snapshot base source, proposed
+source, and structured hunks needed for Studio-side three-way application.
+
 Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
 the first event represented by that sampled row. Group, activity, session, and
 job counts sum `repeatCount`, so compact storage does not change displayed

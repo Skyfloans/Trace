@@ -45,7 +45,7 @@ type EligibleProjectRow = {
   target_universe_id: string;
 };
 
-type PluginSessionRow = {
+export type PluginSessionRow = {
   credential_id: string;
   project_id: string;
   project_name: string;
@@ -220,7 +220,7 @@ function mapPluginSession(session: PluginSessionRow) {
   };
 }
 
-async function loadPluginSession(
+export async function loadPluginSession(
   pool: Pool,
   request: FastifyRequest,
 ): Promise<PluginSessionRow> {

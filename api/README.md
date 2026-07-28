@@ -146,6 +146,42 @@ GET  /v1/plugin-auth/session
 POST /v1/plugin-auth/revoke
 ```
 
+## Roblox Autofix reviews
+
+Apply migration 027 after the place-access and plugin-pairing migrations:
+
+```bash
+npm run migrate:roblox-autofix
+```
+
+Autofix is opt-in at the moment of use. Connecting Studio never calls a model.
+The plugin must explicitly create a run, which selects at most 15 bugs from the
+latest verified place snapshot. Selection is ordered critical, high, medium,
+then low, with impact count and recency as tie-breakers. A bug is attempted at
+most once per snapshot.
+
+The single-concurrency worker downloads and checksum-verifies the RBXL, reads
+its Script, LocalScript, and ModuleScript sources, selects a bounded set of
+relevant scripts, and makes one OpenRouter request per bug. Each request has a
+45-second timeout, a 5,000-token output ceiling, and the whole run has a
+120,000 input / 45,000 output token budget. Results below 0.80 confidence,
+ambiguous source matches, oversized scripts, invented paths, unchanged source,
+or more than three edited scripts are recorded as `unable` without retry.
+`AUTOFIX_MODEL` can override `OPENROUTER_MODEL`.
+
+The plugin-scoped review contract is:
+
+```text
+GET  /v1/plugin-autofix/proposals
+POST /v1/plugin-autofix/runs
+GET  /v1/plugin-autofix/proposals/:proposalId
+POST /v1/plugin-autofix/proposals/:proposalId/review
+```
+
+Accepted proposals are still not published by the API. Studio applies the
+reviewed hunks against its current editor source and reports a conflict without
+changing any script when a hunk no longer matches.
+
 ## AI classification
 
 Trace classifies normalized display-level errors and individual feedback in a

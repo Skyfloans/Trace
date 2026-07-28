@@ -7,6 +7,7 @@ import { registerJobRoutes } from "./jobs.js";
 import { registerFeedbackRoutes } from "./feedback.js";
 import { registerProjectAndErrorRoutes } from "./projects-errors.js";
 import { registerRobloxMetadataRoutes } from "./roblox.js";
+import { registerRobloxAutofixRoutes } from "./roblox-autofix.js";
 import { registerRobloxPlaceAccessRoutes } from "./roblox-place-access.js";
 import { registerRobloxPluginAuthRoutes } from "./roblox-plugin-auth.js";
 import { registerSessionAndLogRoutes } from "./sessions-logs.js";
@@ -17,6 +18,10 @@ export async function registerReadApi(
   oauth: RobloxOAuthConfig | null = null,
   archiveStorage: ArchiveStorage | null = null,
   webOrigin = "http://localhost:5173",
+  autofix: { available: boolean; model: string } = {
+    available: false,
+    model: "openai/gpt-5.4-nano",
+  },
 ): Promise<void> {
   const authenticate = createReadAuthenticator(pool);
   await registerAccountRoutes(app, pool, authenticate, oauth);
@@ -32,6 +37,12 @@ export async function registerReadApi(
     authenticate,
     oauth,
     archiveStorage,
+  );
+  await registerRobloxAutofixRoutes(
+    app,
+    pool,
+    autofix.model,
+    autofix.available,
   );
   await registerProjectAndErrorRoutes(app, pool, authenticate);
   await registerFeedbackRoutes(app, pool, authenticate);
