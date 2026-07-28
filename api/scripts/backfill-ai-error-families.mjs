@@ -57,48 +57,6 @@ async function activateFamilies(familyKeys) {
     [familyKeys],
   );
 
-  const applied = await client.query(
-    `UPDATE display_error_groups groups
-     SET ai_category = cached.category,
-         ai_confidence = cached.confidence,
-         ai_reason = cached.reason,
-         ai_classified_at = cached.classified_at,
-         ai_model = cached.model,
-         ai_prompt_version = cached.prompt_version,
-         ai_status = 'classified'
-     FROM ai_error_family_classifications cached
-     WHERE groups.ai_family_key = ANY($1::text[])
-       AND groups.ai_family_key = cached.family_key
-       AND (
-         groups.ai_status <> 'classified'
-         OR groups.ai_prompt_version < cached.prompt_version
-       )`,
-    [familyKeys],
-  );
-
-  await client.query(
-    `UPDATE display_error_rollups_hourly rollups
-     SET ai_category = cached.category
-     FROM display_error_groups groups
-     JOIN ai_error_family_classifications cached
-       ON cached.family_key = groups.ai_family_key
-     WHERE groups.ai_family_key = ANY($1::text[])
-       AND rollups.display_group_id = groups.id
-       AND rollups.ai_category IS DISTINCT FROM cached.category`,
-    [familyKeys],
-  );
-
-  const removed = await client.query(
-    `DELETE FROM ai_classification_jobs jobs
-     USING display_error_groups groups,
-           ai_error_family_classifications cached
-     WHERE jobs.target_type = 'error'
-       AND jobs.target_id = groups.id
-       AND groups.ai_family_key = ANY($1::text[])
-       AND groups.ai_family_key = cached.family_key`,
-    [familyKeys],
-  );
-
   const promoted = await client.query(
     `WITH representatives AS MATERIALIZED (
        SELECT DISTINCT ON (groups.ai_family_key)
@@ -132,8 +90,8 @@ async function activateFamilies(familyKeys) {
 
   return {
     seeded: seeded.rowCount ?? 0,
-    applied: applied.rowCount ?? 0,
-    removed: removed.rowCount ?? 0,
+    applied: 0,
+    removed: 0,
     promoted: promoted.rowCount ?? 0,
   };
 }
