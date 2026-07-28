@@ -43,6 +43,12 @@ test("plugin autofix queues at most 15 classified bugs in critical-first order",
     ) {
       return { rows: [], rowCount: 0 };
     }
+    if (
+      sql.includes("COUNT(*)::int AS count") &&
+      sql.includes("FROM roblox_autofix_proposals")
+    ) {
+      return { rows: [{ count: 0 }], rowCount: 1 };
+    }
     if (sql.includes("FROM roblox_place_snapshots")) {
       return { rows: [{ id: snapshotId }], rowCount: 1 };
     }

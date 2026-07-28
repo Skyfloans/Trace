@@ -16,6 +16,7 @@ const AUTOFIX_SYSTEM_PROMPT = readFileSync(
 );
 
 export const MAX_AUTOFIX_PROPOSALS = 15;
+export const AUTOFIX_SCHEDULE_INTERVAL_MS = 10 * 60 * 1_000;
 const MAX_CHANGED_SCRIPTS = 3;
 const MAX_CONTEXT_SCRIPTS = 8;
 const MAX_SCRIPT_CHARS = 60_000;
@@ -83,6 +84,13 @@ export type AutofixWorkerOptions = {
   webOrigin: string;
   pollIntervalMs?: number;
   fetchImplementation?: typeof fetch;
+  logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">;
+};
+
+export type AutofixSchedulerOptions = {
+  pool: Pool;
+  model: string;
+  intervalMs?: number;
   logger?: Pick<FastifyBaseLogger, "info" | "warn" | "error">;
 };
 
@@ -679,6 +687,217 @@ async function failRun(pool: Pool, runId: string, error: unknown): Promise<void>
      WHERE run_id = $1 AND status IN ('queued', 'processing')`,
     [runId, message.slice(0, 1_000)],
   );
+}
+
+async function queueProjectRun(
+  options: AutofixSchedulerOptions,
+  projectId: string,
+  credentialId: string,
+): Promise<number> {
+  const client = await options.pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+      [`roblox-autofix:${projectId}`],
+    );
+    const active = await client.query(
+      `SELECT id
+       FROM roblox_autofix_runs
+       WHERE project_id = $1 AND status IN ('queued', 'processing')
+       LIMIT 1`,
+      [projectId],
+    );
+    if (active.rows[0]) {
+      await client.query("COMMIT");
+      return 0;
+    }
+
+    const outstanding = await client.query<{ count: number }>(
+      `SELECT COUNT(*)::int AS count
+       FROM roblox_autofix_proposals
+       WHERE project_id = $1
+         AND status IN ('queued', 'processing', 'ready', 'conflict')`,
+      [projectId],
+    );
+    const remainingCapacity =
+      MAX_AUTOFIX_PROPOSALS - Number(outstanding.rows[0]?.count ?? 0);
+    if (remainingCapacity <= 0) {
+      await client.query("COMMIT");
+      return 0;
+    }
+
+    const snapshot = await client.query<{ id: string }>(
+      `SELECT id
+       FROM roblox_place_snapshots
+       WHERE project_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT 1`,
+      [projectId],
+    );
+    const snapshotId = snapshot.rows[0]?.id;
+    if (!snapshotId) {
+      await client.query("COMMIT");
+      return 0;
+    }
+
+    const candidates = await client.query<{
+      error_group_id: string;
+      ai_category: "critical" | "high" | "medium" | "low";
+    }>(
+      `WITH impact AS (
+         SELECT display_group_id, SUM(event_count)::bigint AS event_count
+         FROM display_error_rollups_hourly
+         WHERE project_id = $1
+         GROUP BY display_group_id
+       )
+       SELECT error.id AS error_group_id, error.ai_category::text
+       FROM display_error_groups error
+       LEFT JOIN impact ON impact.display_group_id = error.id
+       WHERE error.project_id = $1
+         AND error.ai_category IN ('critical', 'high', 'medium', 'low')
+         AND NOT EXISTS (
+           SELECT 1
+           FROM roblox_autofix_proposals existing
+           WHERE existing.snapshot_id = $2
+             AND existing.error_group_id = error.id
+         )
+       ORDER BY
+         CASE error.ai_category
+           WHEN 'critical' THEN 0
+           WHEN 'high' THEN 1
+           WHEN 'medium' THEN 2
+           WHEN 'low' THEN 3
+         END,
+         COALESCE(impact.event_count, 0) DESC,
+         error.last_seen_at DESC,
+         error.id
+       LIMIT $3`,
+      [projectId, snapshotId, remainingCapacity],
+    );
+    if (candidates.rows.length === 0) {
+      await client.query("COMMIT");
+      return 0;
+    }
+
+    const run = await client.query<{ id: string }>(
+      `INSERT INTO roblox_autofix_runs (
+         project_id, snapshot_id, requested_by_credential_id,
+         max_proposals, model
+       ) VALUES ($1, $2, $3, $4, $5)
+       RETURNING id`,
+      [
+        projectId,
+        snapshotId,
+        credentialId,
+        remainingCapacity,
+        options.model,
+      ],
+    );
+    for (const [index, candidate] of candidates.rows.entries()) {
+      await client.query(
+        `INSERT INTO roblox_autofix_proposals (
+           run_id, project_id, snapshot_id, error_group_id,
+           priority_rank, ai_category, model
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          run.rows[0]!.id,
+          projectId,
+          snapshotId,
+          candidate.error_group_id,
+          index + 1,
+          candidate.ai_category,
+          options.model,
+        ],
+      );
+    }
+    await client.query("COMMIT");
+    return candidates.rows.length;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function queueScheduledAutofixRuns(
+  options: AutofixSchedulerOptions,
+): Promise<number> {
+  const eligible = await options.pool.query<{
+    credential_id: string;
+    project_id: string;
+  }>(
+    `SELECT DISTINCT ON (credential.project_id)
+            credential.project_id,
+            credential.id AS credential_id
+     FROM roblox_plugin_credentials credential
+     WHERE credential.revoked_at IS NULL
+       AND credential.expires_at > now()
+       AND EXISTS (
+         SELECT 1
+         FROM roblox_place_snapshots snapshot
+         WHERE snapshot.project_id = credential.project_id
+       )
+     ORDER BY
+       credential.project_id,
+       credential.last_used_at DESC NULLS LAST,
+       credential.created_at DESC,
+       credential.id`,
+  );
+  let queued = 0;
+  for (const project of eligible.rows) {
+    try {
+      queued += await queueProjectRun(
+        options,
+        project.project_id,
+        project.credential_id,
+      );
+    } catch (error) {
+      options.logger?.error(
+        { error, projectId: project.project_id },
+        "Roblox autofix scheduler could not queue project",
+      );
+    }
+  }
+  if (queued > 0) {
+    options.logger?.info(
+      { proposals: queued, projects: eligible.rows.length },
+      "Roblox autofix scheduler queued priority bugs",
+    );
+  }
+  return queued;
+}
+
+export function startRobloxAutofixScheduler(
+  options: AutofixSchedulerOptions,
+): () => Promise<void> {
+  const intervalMs = options.intervalMs ?? AUTOFIX_SCHEDULE_INTERVAL_MS;
+  let stopped = false;
+  let timer: NodeJS.Timeout | undefined;
+  let active: Promise<unknown> | undefined;
+
+  const schedule = (): void => {
+    if (stopped) return;
+    active = queueScheduledAutofixRuns(options)
+      .catch((error) => {
+        options.logger?.error(error, "Roblox autofix scheduler failed");
+        return;
+      })
+      .finally(() => {
+        if (!stopped) {
+          timer = setTimeout(schedule, intervalMs);
+          timer.unref();
+        }
+      });
+  };
+  schedule();
+
+  return async () => {
+    stopped = true;
+    if (timer) clearTimeout(timer);
+    await active;
+  };
 }
 
 export function startRobloxAutofixWorker(

@@ -111,9 +111,10 @@ GET  /v1/plugin-autofix/proposals/{proposalId}
 POST /v1/plugin-autofix/proposals/{proposalId}/review
 ```
 
-Starting a run is the explicit cost boundary and selects no more than 15
-classified bugs. Proposal detail includes the snapshot base source, proposed
-source, and structured hunks needed for Studio-side three-way application.
+The scheduler is the cost boundary: it checks every ten minutes, uses one
+serial model worker, and fills only the remaining capacity below 15 unresolved
+requests. Proposal detail includes the snapshot base source, proposed source,
+and structured hunks needed for Studio-side three-way application.
 
 Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
 the first event represented by that sampled row. Group, activity, session, and

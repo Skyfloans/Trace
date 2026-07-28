@@ -58,9 +58,11 @@ uploaded Trace PNG has no backing tile. The widget opens docked right at
 
 ## Review and apply
 
-Connecting goes directly to the fix-request queue. Preparing fixes is a manual
-action and asks the API for no more than 15 bugs, ordered most critical first.
-Each ready request opens a dark unified diff with old/new line numbers.
+Connecting goes directly to the fix-request queue. The server checks the
+priority list every ten minutes and keeps no more than 15 unresolved requests
+for the project, ordered most critical first. The plugin refreshes the inbox
+automatically. Each ready request opens a dark unified diff with old/new line
+numbers.
 
 Before accepting, the plugin resolves every proposed path and reads the current
 editor source with `ScriptEditorService:GetEditorSource()`. If the source still

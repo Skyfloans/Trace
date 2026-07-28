@@ -154,11 +154,12 @@ Apply migration 027 after the place-access and plugin-pairing migrations:
 npm run migrate:roblox-autofix
 ```
 
-Autofix is opt-in at the moment of use. Connecting Studio never calls a model.
-The plugin must explicitly create a run, which selects at most 15 bugs from the
-latest verified place snapshot. Selection is ordered critical, high, medium,
-then low, with impact count and recency as tie-breakers. A bug is attempted at
-most once per snapshot.
+Autofix is enabled by an active Studio plugin connection and a verified place
+snapshot. The scheduler checks eligible projects immediately on startup and
+every ten minutes. It fills only vacant review slots, so a project never has
+more than 15 unresolved queued, processing, ready, or conflicted requests.
+Selection is ordered critical, high, medium, then low, with impact count and
+recency as tie-breakers. A bug is attempted at most once per snapshot.
 
 The single-concurrency worker downloads and checksum-verifies the RBXL, reads
 its Script, LocalScript, and ModuleScript sources, selects a bounded set of

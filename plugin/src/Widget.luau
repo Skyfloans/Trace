@@ -14,7 +14,6 @@ export type Callbacks = {
 	onConnect: () -> (),
 	onDisconnect: () -> (),
 	onOpenProposal: (proposalId: string) -> (),
-	onPrepare: () -> (),
 	onRefresh: () -> (),
 	onReject: (proposalId: string) -> (),
 	onStartOver: () -> (),
@@ -706,7 +705,7 @@ function Widget:_renderReviews(palette: Palette)
 	local title = Instance.new("TextLabel")
 	title.BackgroundTransparency = 1
 	title.Font = FONT_MEDIUM
-	title.Size = UDim2.new(1, -40, 1, 0)
+	title.Size = UDim2.new(1, -72, 1, 0)
 	title.Text = "Fix requests"
 	title.TextColor3 = palette.text
 	title.TextSize = 18
@@ -715,11 +714,11 @@ function Widget:_renderReviews(palette: Palette)
 	local refresh = Instance.new("TextButton")
 	refresh.BackgroundColor3 = palette.button
 	refresh.Font = FONT_MEDIUM
-	refresh.Position = UDim2.new(1, -32, 0, 1)
-	refresh.Size = UDim2.fromOffset(32, 32)
-	refresh.Text = "↻"
+	refresh.Position = UDim2.new(1, -64, 0, 1)
+	refresh.Size = UDim2.fromOffset(64, 32)
+	refresh.Text = "Refresh"
 	refresh.TextColor3 = palette.text
-	refresh.TextSize = 16
+	refresh.TextSize = 10
 	addCorner(refresh, 7)
 	addStroke(refresh, palette.border)
 	refresh.Parent = heading
@@ -753,15 +752,12 @@ function Widget:_renderReviews(palette: Palette)
 			30
 		)
 	else
-		local prepare = createButton(self.content, "Prepare up to 15 priority fixes", "primary", palette, 30)
-		prepare.MouseButton1Click:Connect(self.callbacks.onPrepare)
-		createLabel(
+		createMessage(
 			self.content,
-			"Manual only · critical first · one bounded attempt per bug",
-			9,
-			palette.muted,
-			FONT,
-			31
+			palette,
+			"Trace checks priority bugs automatically every 10 minutes and keeps at most 15 unresolved requests.",
+			"info",
+			30
 		)
 	end
 
@@ -778,7 +774,7 @@ function Widget:_renderReviews(palette: Palette)
 		emptyTitle.Size = UDim2.new(1, -28, 0, 22)
 		local emptyBody = createLabel(
 			empty,
-			"Prepare a batch when you want Trace to review the highest-priority classified bugs.",
+			"Trace is watching the priority list. New review requests will appear here automatically.",
 			11,
 			palette.muted,
 			FONT,

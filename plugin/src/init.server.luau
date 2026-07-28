@@ -114,11 +114,10 @@ local function refreshReviews(errorMessage: string?)
 		end
 		currentReviews = response.data
 		showReviews(nil, nil)
-		if runIsActive(response.data) then
-			task.delay(4, function()
-				if generation == refreshGeneration and credential == token then refreshReviews(nil) end
-			end)
-		end
+		local refreshDelay = if runIsActive(response.data) then 4 else 30
+		task.delay(refreshDelay, function()
+			if generation == refreshGeneration and credential == token then refreshReviews(nil) end
+		end)
 	end)
 end
 
@@ -191,32 +190,13 @@ local function disconnect()
 	if token then task.spawn(function() api:revoke(token) end) end
 end
 
-local function prepareFixes()
-	local token = credential
-	if not token then
-		showConnect("Connect this Studio to Trace before preparing fixes.")
-		return
-	end
-	widget:setState({
-		kind = "loading",
-		loadingMessage = "Selecting up to 15 priority bugs from the latest place snapshot…",
-	})
-	task.spawn(function()
-		local response = api:startAutofix(token)
-		if not response.ok then
-			showReviews(response.errorMessage or "Trace could not start a fix batch.", nil)
-			return
-		end
-		refreshReviews(nil)
-	end)
-end
-
 local function openProposal(proposalId: string)
 	local token = credential
 	if not token then
 		showConnect("Connect this Studio to Trace before reviewing fixes.")
 		return
 	end
+	refreshGeneration += 1
 	activeProposal = nil
 	widget:setState({
 		kind = "detail",
@@ -459,7 +439,6 @@ widget = Widget.new(plugin, {
 	onConnect = startPairing,
 	onDisconnect = disconnect,
 	onOpenProposal = openProposal,
-	onPrepare = prepareFixes,
 	onRefresh = function() refreshReviews(nil) end,
 	onReject = rejectProposal,
 	onStartOver = function()

@@ -167,6 +167,24 @@ export async function registerRobloxAutofixRoutes(
           });
         }
 
+        const outstanding = await client.query<{ count: number }>(
+          `SELECT COUNT(*)::int AS count
+           FROM roblox_autofix_proposals
+           WHERE project_id = $1
+             AND status IN ('queued', 'processing', 'ready', 'conflict')`,
+          [session.project_id],
+        );
+        const remainingCapacity =
+          MAX_AUTOFIX_PROPOSALS - Number(outstanding.rows[0]?.count ?? 0);
+        if (remainingCapacity <= 0) {
+          await client.query("COMMIT");
+          noStore(reply);
+          return reply.code(200).send({
+            created: false,
+            reason: "review_capacity_reached",
+          });
+        }
+
         const snapshot = await client.query<{ id: string }>(
           `SELECT id
            FROM roblox_place_snapshots
@@ -216,7 +234,7 @@ export async function registerRobloxAutofixRoutes(
              error.last_seen_at DESC,
              error.id
            LIMIT $3`,
-          [session.project_id, snapshotId, limit],
+          [session.project_id, snapshotId, Math.min(limit, remainingCapacity)],
         );
         if (candidates.rows.length === 0) {
           await client.query("COMMIT");
@@ -237,7 +255,7 @@ export async function registerRobloxAutofixRoutes(
             session.project_id,
             snapshotId,
             session.credential_id,
-            limit,
+            Math.min(limit, remainingCapacity),
             model,
           ],
         );

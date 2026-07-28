@@ -4,7 +4,11 @@ import { config } from "./config.js";
 import { createPool, withTransaction } from "./db.js";
 import { archiveEligiblePartitions } from "./telemetry-archive.js";
 import { startAIClassificationWorker } from "./ai-classification.js";
-import { startRobloxAutofixWorker } from "./roblox-autofix.js";
+import {
+  AUTOFIX_SCHEDULE_INTERVAL_MS,
+  startRobloxAutofixScheduler,
+  startRobloxAutofixWorker,
+} from "./roblox-autofix.js";
 
 // Busy games can legitimately queue many different per-fingerprint advisory
 // locks at once. Keep enough pool headroom that unrelated ingestion does not
@@ -49,6 +53,7 @@ const app = await buildApp(
 );
 let maintenanceTimer: NodeJS.Timeout | undefined;
 let stopClassificationWorkers: (() => Promise<void>) | undefined;
+let stopAutofixScheduler: (() => Promise<void>) | undefined;
 let stopAutofixWorker: (() => Promise<void>) | undefined;
 
 async function runMaintenance(): Promise<void> {
@@ -85,6 +90,7 @@ app.addHook("onClose", async () => {
     clearInterval(maintenanceTimer);
   }
   await stopClassificationWorkers?.();
+  await stopAutofixScheduler?.();
   await stopAutofixWorker?.();
   archiveStorage?.close();
   await Promise.all([
@@ -159,9 +165,19 @@ try {
       webOrigin: config.WEB_ORIGIN,
       logger: app.log,
     });
+    stopAutofixScheduler = startRobloxAutofixScheduler({
+      pool: autofixPool,
+      model: autofixModel,
+      logger: app.log,
+    });
     app.log.info(
-      { model: autofixModel, maxProposals: 15, concurrency: 1 },
-      "Roblox autofix worker started",
+      {
+        model: autofixModel,
+        maxOutstandingProposals: 15,
+        concurrency: 1,
+        scheduleMinutes: AUTOFIX_SCHEDULE_INTERVAL_MS / 60_000,
+      },
+      "Roblox autofix worker and scheduler started",
     );
   } else {
     app.log.warn(
