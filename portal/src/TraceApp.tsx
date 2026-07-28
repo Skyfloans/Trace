@@ -971,7 +971,7 @@ function Feedback({ project, projects, projectMenu, setProjectMenu, setProjectId
           </div>
           <span className="feedback-device-cell" role="cell">{entry.device ?? 'Unknown'}</span>
           <time className="feedback-time" role="cell" dateTime={entry.submittedAt}>{formatDate(entry.submittedAt)}</time>
-          <div className="feedback-comment" role="cell"><ClassificationBadge kind="feedback" classification={entry.classification} /><p className="feedback-message">{entry.message}</p></div>
+          <div className="feedback-comment" role="cell"><div className="feedback-tags"><ClassificationBadge kind="feedback" classification={entry.classification} />{entry.translated && <span className="classification-badge feedback translated">Translated</span>}</div><p className="feedback-message">{entry.message}</p></div>
           <div className="feedback-session-cell" role="cell">
             {entry.sessionId ? <button className="feedback-session-button" onClick={() => onOpenSession(entry.sessionId!)}>Open session <ChevronRight size={15} aria-hidden="true" /></button> : <span className="feedback-session-expired">Expired</span>}
           </div>

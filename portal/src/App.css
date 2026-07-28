@@ -662,6 +662,13 @@ kbd {
   background: transparent;
 }
 
+.feedback-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.classification-badge.feedback.translated {
+  border: 1px solid #355c6d;
+  color: #9ddcf2;
+  background: #18272f;
+}
+
 .event-message { min-width: 0; }
 .event-message strong,
 .event-message code { display: block; }

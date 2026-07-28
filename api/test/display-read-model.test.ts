@@ -198,6 +198,17 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
     new URL("../scripts/enqueue-ai-classification-backfill.mjs", import.meta.url),
     "utf8",
   );
+  const feedbackTranslation = await readFile(
+    new URL(
+      "../../database/migrations/023_feedback_translation.sql",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const worker = await readFile(
+    new URL("../src/ai-classification.ts", import.meta.url),
+    "utf8",
+  );
 
   assert.match(migration, /ALTER TABLE display_error_groups/);
   assert.match(migration, /ALTER TABLE feedback/);
@@ -221,6 +232,9 @@ test("AI classification queues normalized groups and keeps filters indexed", asy
   assert.match(indexes, /feedback_project_ai_category_time_idx/);
   assert.match(backfill, /AI_CLASSIFICATION_ENQUEUE_BATCH_SIZE/);
   assert.match(backfill, /ON CONFLICT \(target_type, target_id\) DO NOTHING/);
+  assert.match(feedbackTranslation, /ADD COLUMN IF NOT EXISTS ai_translated BOOLEAN/);
+  assert.match(worker, /SET message = CASE[\s\S]+WHEN input\.translated/);
+  assert.match(worker, /ai_translated = input\.translated/);
 });
 
 test("AI error classifications are cached once per normalized fingerprint", async () => {

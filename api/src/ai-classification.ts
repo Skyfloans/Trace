@@ -43,6 +43,8 @@ type ClassificationResult = {
   category: ErrorAICategory | FeedbackAICategory;
   confidence: number;
   reason: string;
+  translated: boolean;
+  translatedMessage: string | null;
 };
 
 export type ClassificationWorkerOptions = {
@@ -72,10 +74,12 @@ const resultEnvelopeSchema = z.object({
     category: z.string(),
     confidence: z.number().min(0).max(1),
     reason: z.string().trim().min(1).max(120),
+    translated: z.boolean().optional(),
+    translated_message: z.string().trim().min(8).max(221).nullable().optional(),
   })),
 });
 
-const promptVersion = 1;
+const promptVersion = 2;
 const maxAttempts = 5;
 
 function parseStructuredContent(content: string): unknown {
@@ -106,13 +110,27 @@ Judge the normalized group, not individual IDs. Treat the provided severity as e
   return `You classify player-submitted Roblox game feedback for a developer dashboard.
 Choose exactly one category:
 - bug_report: the player describes broken, incorrect, missing, or malfunctioning behavior
-- critique: the player expresses dissatisfaction or evaluates an existing design without proposing a clear new feature
-- suggestion: the player proposes a feature, change, or improvement
-- general: praise, greetings, random text, neutral remarks, or anything with no actionable product signal
+- critique: useful criticism of an existing design that identifies a specific aspect, problem, or player-impact a developer can understand
+- suggestion: the player proposes a reasonably clear feature, change, or improvement
+- general: praise, greetings, random text, neutral remarks, vague dislike, insults, or anything with no substantive and actionable product signal
+Do not classify unproductive negativity as critique. For example, "this is so ugly" and "I hate it" are general unless the message explains what is wrong with a specific design or experience.
 When a message both reports breakage and suggests a fix, prefer bug_report. Return a reason of at most 12 words without exposing chain-of-thought.`;
 }
 
 function responseFormat(target: ClassificationTarget, itemCount: number) {
+  const feedbackProperties = target === "feedback"
+    ? {
+      translated: { type: "boolean" },
+      translated_message: {
+        type: ["string", "null"],
+        minLength: 8,
+        maxLength: 221,
+      },
+    }
+    : {};
+  const feedbackRequired = target === "feedback"
+    ? ["translated", "translated_message"]
+    : [];
   return {
     type: "json_schema",
     json_schema: {
@@ -135,8 +153,15 @@ function responseFormat(target: ClassificationTarget, itemCount: number) {
                 },
                 confidence: { type: "number", minimum: 0, maximum: 1 },
                 reason: { type: "string", maxLength: 120 },
+                ...feedbackProperties,
               },
-              required: ["key", "category", "confidence", "reason"],
+              required: [
+                "key",
+                "category",
+                "confidence",
+                "reason",
+                ...feedbackRequired,
+              ],
               additionalProperties: false,
             },
           },
@@ -178,6 +203,11 @@ export async function classifyWithOpenRouter(
             content: [
               `Return exactly ${inputs.length} results: one for every key from 0`,
               `through ${inputs.length - 1}, in the same order.`,
+              ...(target === "feedback"
+                ? [
+                  "For each message written meaningfully in a language other than English, translate it into natural English while preserving its meaning and tone. Set translated=true and translated_message to only the English text (8-221 characters). Do not name or include the original language. For an English message, set translated=false and translated_message=null. Categorize based on the English meaning.",
+                ]
+                : []),
               JSON.stringify({
                 items: inputs.map(({ message, severity, side, source }, key) => ({
                   key,
@@ -219,11 +249,26 @@ export async function classifyWithOpenRouter(
     seen.add(result.key);
     const input = inputs[result.key];
     if (!input) return [];
+    if (
+      target === "feedback" &&
+      (
+        result.translated === undefined ||
+        result.translated_message === undefined ||
+        (result.translated && result.translated_message === null) ||
+        (!result.translated && result.translated_message !== null)
+      )
+    ) {
+      return [];
+    }
     return [{
       id: input.id,
       category: result.category,
       confidence: result.confidence,
       reason: result.reason,
+      translated: target === "feedback" ? result.translated! : false,
+      translatedMessage: target === "feedback"
+        ? result.translated_message!
+        : null,
     }];
   }) as ClassificationResult[];
   if (results.length !== inputs.length) {
@@ -417,6 +462,8 @@ async function applyResults(
   const categories = results.map((result) => result.category);
   const confidences = results.map((result) => result.confidence);
   const reasons = results.map((result) => result.reason);
+  const translated = results.map((result) => result.translated);
+  const translatedMessages = results.map((result) => result.translatedMessage);
 
   if (target === "error") {
     await client.query(
@@ -526,20 +573,36 @@ async function applyResults(
            $1::uuid[],
            $2::feedback_ai_category[],
            $3::real[],
-           $4::text[]
-         ) AS input(id, category, confidence, reason)
+           $4::text[],
+           $5::boolean[],
+           $6::text[]
+         ) AS input(id, category, confidence, reason, translated, translated_message)
        )
        UPDATE feedback
-       SET ai_category = input.category,
+       SET message = CASE
+             WHEN input.translated THEN input.translated_message
+             ELSE feedback.message
+           END,
+           ai_translated = input.translated,
+           ai_category = input.category,
            ai_confidence = input.confidence,
            ai_reason = input.reason,
            ai_classified_at = now(),
-           ai_model = $5,
-           ai_prompt_version = $6,
+           ai_model = $7,
+           ai_prompt_version = $8,
            ai_status = 'classified'
        FROM input
        WHERE feedback.id = input.id`,
-      [ids, categories, confidences, reasons, model, promptVersion],
+      [
+        ids,
+        categories,
+        confidences,
+        reasons,
+        translated,
+        translatedMessages,
+        model,
+        promptVersion,
+      ],
     );
   }
   if (target === "feedback") {

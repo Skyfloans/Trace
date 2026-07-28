@@ -63,9 +63,11 @@ test("OpenRouter classification uses the Roblox Luau rubric and strict output", 
   assert.match(messages[1]?.content ?? "", /one for every key/);
 });
 
-test("feedback classification only permits product-signal categories", async () => {
+test("feedback classification translates non-English text and requires useful critique", async () => {
   let responseSchema: unknown;
-  await classifyWithOpenRouter(
+  let systemMessage = "";
+  let userMessage = "";
+  const results = await classifyWithOpenRouter(
     {
       apiKey: "test-openrouter-key-that-is-long-enough",
       model: "openai/gpt-5.4-nano",
@@ -73,6 +75,8 @@ test("feedback classification only permits product-signal categories", async () 
       fetchImplementation: async (_input, init) => {
         const body = JSON.parse(String(init?.body));
         responseSchema = body.response_format;
+        systemMessage = body.messages[0].content;
+        userMessage = body.messages[1].content;
         return new Response(JSON.stringify({
           choices: [{
             message: {
@@ -84,6 +88,8 @@ ${JSON.stringify({
                   category: "suggestion",
                   confidence: 0.88,
                   reason: "Requests a new inventory search feature.",
+                  translated: true,
+                  translated_message: "Please add a search box to the inventory.",
                 }],
               })}
 \`\`\``,
@@ -96,7 +102,7 @@ ${JSON.stringify({
     [{
       id: "20000000-0000-4000-8000-000000000001",
       type: "feedback",
-      message: "Please add a search box to the inventory.",
+      message: "Por favor, adicione uma busca ao inventário.",
     }],
   );
 
@@ -105,5 +111,15 @@ ${JSON.stringify({
   assert.match(serialized, /critique/);
   assert.match(serialized, /suggestion/);
   assert.match(serialized, /general/);
+  assert.match(serialized, /translated_message/);
   assert.doesNotMatch(serialized, /critical/);
+  assert.match(systemMessage, /unproductive negativity/);
+  assert.match(systemMessage, /this is so ugly/);
+  assert.match(userMessage, /translate it into natural English/);
+  assert.match(userMessage, /Do not name or include the original language/);
+  assert.equal(results[0]?.translated, true);
+  assert.equal(
+    results[0]?.translatedMessage,
+    "Please add a search box to the inventory.",
+  );
 });

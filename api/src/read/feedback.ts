@@ -62,7 +62,7 @@ export async function registerFeedbackRoutes(
 
       const result = await pool.query(
         `SELECT
-           f.id, f.message, f.submitted_at, f.session_id,
+           f.id, f.message, f.ai_translated, f.submitted_at, f.session_id,
            f.ai_category, f.ai_confidence, f.ai_reason, f.ai_status,
            f.player_id, s.player_name, s.player_display_name,
            s.device, s.platform
@@ -84,6 +84,7 @@ export async function registerFeedbackRoutes(
         data: rows.map((row) => ({
           id: row.id,
           message: row.message,
+          translated: row.ai_translated ?? false,
           submittedAt: iso(row.submitted_at),
           sessionId: row.session_id,
           classification: {

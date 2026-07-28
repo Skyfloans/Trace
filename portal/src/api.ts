@@ -183,6 +183,7 @@ export type ActivityBucket = {
 export type FeedbackEntry = {
   id: string
   message: string
+  translated: boolean
   submittedAt: string
   sessionId: string | null
   player: PlayerSummary

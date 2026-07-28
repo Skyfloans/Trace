@@ -2131,6 +2131,7 @@ test("feedback is returned with player and session attribution", async () => {
         return { rows: [{
           id: "30000000-0000-4000-8000-000000000001",
           message: "The round timer feels too long.",
+          ai_translated: false,
           submitted_at: submittedAt,
           session_id: "40000000-0000-4000-8000-000000000001",
           player_id: "123",
@@ -2153,6 +2154,7 @@ test("feedback is returned with player and session attribution", async () => {
   assert.deepEqual(response.json().data[0], {
     id: "30000000-0000-4000-8000-000000000001",
     message: "The round timer feels too long.",
+    translated: false,
     submittedAt: submittedAt.toISOString(),
     sessionId: "40000000-0000-4000-8000-000000000001",
     classification: {
