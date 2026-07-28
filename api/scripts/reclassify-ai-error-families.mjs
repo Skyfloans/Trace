@@ -14,6 +14,10 @@ await client.connect();
 let keyedGroups = 0;
 let queuedFamilies = 0;
 
+function wait(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 try {
   await client.query("SET lock_timeout = '5s'");
   await client.query("SET statement_timeout = '5min'");
@@ -103,57 +107,66 @@ try {
 
     const ids = candidates.rows.map((row) => String(row.id));
     const projectIds = candidates.rows.map((row) => String(row.project_id));
-    await client.query("BEGIN");
-    try {
-      await client.query(
-        `UPDATE display_error_groups
-         SET ai_status = 'pending'
-         WHERE id = ANY($1::uuid[])`,
-        [ids],
-      );
-      await client.query(
-        `INSERT INTO ai_classification_jobs (
-           target_type,
-           target_id,
-           project_id,
-           status,
-           priority,
-           attempts,
-           available_at,
-           locked_at,
-           locked_by,
-           last_error
-         )
-         SELECT
-           'error'::ai_classification_target,
-           input.id,
-           input.project_id,
-           'pending',
-           10,
-           0,
-           now(),
-           NULL,
-           NULL,
-           NULL
-         FROM unnest(
-           $1::uuid[],
-           $2::uuid[]
-         ) AS input(id, project_id)
-         ON CONFLICT (target_type, target_id) DO UPDATE
-         SET project_id = EXCLUDED.project_id,
-             status = 'pending',
-             priority = 10,
-             attempts = 0,
-             available_at = now(),
-             locked_at = NULL,
-             locked_by = NULL,
-             last_error = NULL`,
-        [ids, projectIds],
-      );
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
+    for (let attempt = 1; ; attempt += 1) {
+      await client.query("BEGIN");
+      try {
+        await client.query(
+          `UPDATE display_error_groups
+           SET ai_status = 'pending'
+           WHERE id = ANY($1::uuid[])`,
+          [ids],
+        );
+        await client.query(
+          `INSERT INTO ai_classification_jobs (
+             target_type,
+             target_id,
+             project_id,
+             status,
+             priority,
+             attempts,
+             available_at,
+             locked_at,
+             locked_by,
+             last_error
+           )
+           SELECT
+             'error'::ai_classification_target,
+             input.id,
+             input.project_id,
+             'pending',
+             10,
+             0,
+             now(),
+             NULL,
+             NULL,
+             NULL
+           FROM unnest(
+             $1::uuid[],
+             $2::uuid[]
+           ) AS input(id, project_id)
+           ON CONFLICT (target_type, target_id) DO UPDATE
+           SET project_id = EXCLUDED.project_id,
+               status = 'pending',
+               priority = 10,
+               attempts = 0,
+               available_at = now(),
+               locked_at = NULL,
+               locked_by = NULL,
+               last_error = NULL`,
+          [ids, projectIds],
+        );
+        await client.query("COMMIT");
+        break;
+      } catch (error) {
+        await client.query("ROLLBACK");
+        if (
+          !["40P01", "55P03"].includes(error?.code) ||
+          attempt >= 12
+        ) {
+          throw error;
+        }
+        await wait(Math.min(5_000, attempt * 500));
+      }
     }
 
     queuedFamilies += candidates.rows.length;
