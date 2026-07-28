@@ -437,7 +437,7 @@ local function retryProposal(proposalId: string)
 	widget:setState({
 		kind = "detail",
 		proposal = proposal,
-		notice = "Queueing this request with the improved source matcher…",
+		notice = "Queueing this request with the improved cross-script investigation…",
 	})
 	task.spawn(function()
 		local response = api:reviewProposal(token, proposalId, "retry", nil)

@@ -63,8 +63,9 @@ priority list every ten minutes and keeps no more than 15 unresolved requests
 for the project, ordered most critical first. The plugin refreshes the inbox
 automatically. Each ready request opens a dark unified diff with old/new line
 numbers. Requests without a concrete script edit are shown as diagnostics
-instead of empty code reviews; they can be retried with the source matcher or
-dismissed.
+instead of empty code reviews; they can be retried with the bounded cross-script
+investigation or dismissed. Reviewable proposals can also be regenerated when
+the displayed diff addresses a symptom instead of the root cause.
 
 Before accepting, the plugin resolves every proposed path and reads the current
 editor source with `ScriptEditorService:GetEditorSource()`. If the source still

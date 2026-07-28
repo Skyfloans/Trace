@@ -115,9 +115,10 @@ The scheduler is the cost boundary: it checks every ten minutes, uses one
 serial model worker, and fills only the remaining capacity below 15 unresolved
 requests. Proposal detail includes the snapshot base source, proposed source,
 and structured hunks needed for Studio-side three-way application. The review
-action also accepts `retry` for `unable` or `failed` proposals; it requeues one
-request only when there is no active run and the 15-request review capacity has
-room. Rejecting an unavailable request dismisses it from the inbox.
+action also accepts `retry` for completed, conflicted, `unable`, or `failed`
+proposals; it requeues one request only when there is no active run and the
+15-request review capacity has room. Retrying a completed proposal reuses its
+existing slot. Rejecting an unavailable request dismisses it from the inbox.
 
 Occurrence objects include `repeatCount` and `lastOccurredAt`. `occurredAt` is
 the first event represented by that sampled row. Group, activity, session, and

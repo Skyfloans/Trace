@@ -59,7 +59,7 @@ const modelResultSchema = z.object({
   summary: z.string().trim().min(1).max(400),
   confidence: z.number().min(0).max(1),
   risk: z.enum(["low", "medium", "high"]),
-  reason: z.string().trim().min(1).max(300).optional(),
+  reason: z.string().trim().min(1).max(300),
   changes: z.array(z.object({
     path: z.string().trim().min(1).max(1_000),
     proposedSource: z.string().max(1_000_000),
@@ -173,6 +173,42 @@ function evidenceIdentifiers(value: string): string[] {
   )].slice(0, 40);
 }
 
+function leadingTag(value: string): string | null {
+  const tag = value.match(/^\s*\[([^\]\r\n]{2,80})\]/)?.[1]?.trim();
+  return tag ? tag.toLowerCase() : null;
+}
+
+function discoveryScore(
+  script: PlaceScript,
+  evidence: string,
+  identifiers: string[],
+  tag: string | null,
+): { identifierMatches: number; score: number } {
+  const path = script.path.toLowerCase();
+  const name = script.name.toLowerCase();
+  const source = script.source.toLowerCase();
+  let score = evidence.includes(path) ? 100 : 0;
+  if (name.length >= 3 && evidence.includes(name)) score += 20;
+  if (tag) {
+    if (name === tag || path.split(".").includes(tag)) score += 60;
+    if (
+      source.includes(`["${tag}"]`) ||
+      source.includes(`['${tag}']`) ||
+      source.includes(`"[${tag}]`) ||
+      source.includes(`'[${tag}]`)
+    ) {
+      score += 45;
+    } else if (source.includes(`[${tag}]`)) {
+      score += 25;
+    }
+  }
+  const identifierMatches = identifiers.filter((identifier) =>
+    source.includes(identifier)
+  ).length;
+  score += Math.min(identifierMatches, 8);
+  return { identifierMatches, score };
+}
+
 export function findTargetScript(
   scripts: PlaceScript[],
   sourceScript: string | null,
@@ -196,18 +232,11 @@ export function findTargetScript(
     message ?? "",
   ].join("\n").toLowerCase();
   const identifiers = evidenceIdentifiers(evidence);
+  const tag = leadingTag(message ?? "");
   const scored = scripts
     .map((script) => {
-      const path = script.path.toLowerCase();
-      const name = script.name.toLowerCase();
-      const source = script.source.toLowerCase();
-      let score = evidence.includes(path) ? 100 : 0;
-      if (name.length >= 3 && evidence.includes(name)) score += 20;
-      const identifierMatches = identifiers.filter((identifier) =>
-        source.includes(identifier)
-      ).length;
-      score += Math.min(identifierMatches, 8);
-      return { identifierMatches, script, score };
+      const scored = discoveryScore(script, evidence, identifiers, tag);
+      return { ...scored, script };
     })
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
@@ -224,6 +253,42 @@ export function findTargetScript(
   return scored[0].script;
 }
 
+export function findDiscoveryScripts(
+  scripts: PlaceScript[],
+  sourceScript: string | null,
+  stack: string | null,
+  message: string,
+): PlaceScript[] {
+  const evidence = [
+    sourceScript ?? "",
+    stack ?? "",
+    message,
+  ].join("\n").toLowerCase();
+  const identifiers = evidenceIdentifiers(evidence);
+  const tag = leadingTag(message);
+  const candidates = scripts
+    .filter((script) => script.source.length <= MAX_SCRIPT_CHARS)
+    .map((script) => ({
+      script,
+      ...discoveryScore(script, evidence, identifiers, tag),
+    }))
+    .filter(({ score, identifierMatches }) =>
+      score >= 20 || identifierMatches >= 2
+    )
+    .sort((left, right) =>
+      right.score - left.score || left.script.path.localeCompare(right.script.path)
+    );
+  const selected: PlaceScript[] = [];
+  let characters = 0;
+  for (const { script } of candidates) {
+    if (selected.length >= MAX_CONTEXT_SCRIPTS) break;
+    if (characters + script.source.length > MAX_CONTEXT_CHARS) continue;
+    selected.push(script);
+    characters += script.source.length;
+  }
+  return selected;
+}
+
 function contextFor(
   scripts: PlaceScript[],
   target: PlaceScript,
@@ -236,6 +301,9 @@ function contextFor(
     proposal.normalized_stack ?? "",
   ].join("\n").toLowerCase();
   const targetParent = target.path.split(".").slice(0, -1).join(".");
+  const relatedIdentifiers = evidenceIdentifiers(
+    `${proposal.normalized_message}\n${proposal.normalized_stack ?? ""}`,
+  );
   const candidates = scripts
     .filter((script) => script.path !== target.path)
     .filter((script) => script.source.length <= MAX_SCRIPT_CHARS)
@@ -251,6 +319,18 @@ function contextFor(
       ) {
         score += 1;
       }
+      if (
+        script.source.toLowerCase().includes(target.name.toLowerCase()) ||
+        script.source.toLowerCase().includes(target.path.toLowerCase())
+      ) {
+        score += 8;
+      }
+      score += Math.min(
+        relatedIdentifiers.filter((identifier) =>
+          script.source.toLowerCase().includes(identifier)
+        ).length,
+        4,
+      );
       return { script, score };
     })
     .filter(({ score }) => score > 0)
@@ -392,6 +472,46 @@ async function requestFix(
 
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function runtimeCallCount(source: string, names: string[]): number {
+  const pattern = new RegExp(`\\b(?:${names.join("|")})\\s*\\(`, "gi");
+  return source
+    .split(/\r?\n/)
+    .filter((line) => !line.trimStart().startsWith("--"))
+    .reduce((count, line) => count + (line.match(pattern)?.length ?? 0), 0);
+}
+
+export function validateRootCauseChange(
+  baseSource: string,
+  proposedSource: string,
+): string | null {
+  const baseFailures = runtimeCallCount(baseSource, ["error", "assert"]);
+  const proposedFailures = runtimeCallCount(proposedSource, ["error", "assert"]);
+  if (proposedFailures < baseFailures) {
+    return "Trace rejected this change because it removed an existing error/assert signal instead of proving a root-cause fix.";
+  }
+  const baseWarnings = runtimeCallCount(baseSource, ["warn"]);
+  const proposedWarnings = runtimeCallCount(proposedSource, ["warn"]);
+  if (
+    proposedWarnings < baseWarnings &&
+    proposedFailures <= baseFailures
+  ) {
+    return "Trace rejected this change because it reduced failure reporting instead of correcting the failing behavior.";
+  }
+  const commentedDiagnostics = (source: string) =>
+    source
+      .split(/\r?\n/)
+      .filter((line) =>
+        /^\s*--.*\b(?:error|assert|warn)\s*\(/i.test(line)
+      ).length;
+  if (
+    commentedDiagnostics(proposedSource) >
+      commentedDiagnostics(baseSource)
+  ) {
+    return "Trace rejected this change because it commented out an existing failure signal.";
+  }
+  return null;
 }
 
 function patchFor(path: string, baseSource: string, proposedSource: string) {
@@ -542,7 +662,7 @@ async function saveReadyProposal(
       [
         proposal.id,
         result.title,
-        result.summary,
+        `Root cause: ${result.reason}\n\n${result.summary}`,
         result.confidence,
         result.risk,
         usage.input,
@@ -615,20 +735,21 @@ async function processRun(
         proposal.normalized_stack,
         proposal.normalized_message,
       );
-      if (!target) {
-        await markUnable(
-          options.pool,
-          proposal.id,
-          "Trace could not identify one unambiguous source script for this error.",
+      const context = target
+        ? contextFor(scripts, target, proposal)
+        : findDiscoveryScripts(
+          scripts,
+          proposal.source_script,
+          proposal.normalized_stack,
+          proposal.normalized_message,
         );
-        continue;
-      }
-      const context = contextFor(scripts, target, proposal);
       if (context.length === 0) {
         await markUnable(
           options.pool,
           proposal.id,
-          "The source script is too large for a bounded, reliable autofix review.",
+          target
+            ? "The source script is too large for a bounded, reliable autofix review."
+            : "Trace found no high-signal scripts after a bounded cross-script search.",
         );
         continue;
       }
@@ -692,6 +813,30 @@ async function processRun(
           options.pool,
           proposal.id,
           "The proposed change did not satisfy Trace's path and source safety checks.",
+          {
+            title: result.title,
+            summary: result.summary,
+            confidence: result.confidence,
+            risk: result.risk,
+            inputTokens,
+            outputTokens,
+          },
+        );
+        continue;
+      }
+      const unsafeReason = result.changes
+        .map((change) => {
+          const script = byPath.get(change.path);
+          return script
+            ? validateRootCauseChange(script.source, change.proposedSource)
+            : null;
+        })
+        .find((reason): reason is string => reason !== null);
+      if (unsafeReason) {
+        await markUnable(
+          options.pool,
+          proposal.id,
+          unsafeReason,
           {
             title: result.title,
             summary: result.summary,

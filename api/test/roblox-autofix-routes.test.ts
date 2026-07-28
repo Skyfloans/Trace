@@ -134,7 +134,7 @@ test("plugin autofix does not queue work when OpenRouter or storage is absent", 
   await app.close();
 });
 
-test("an unavailable proposal can be retried without bypassing the queue cap", async () => {
+test("a reviewable proposal can be regenerated in its existing queue slot", async () => {
   let proposalReset = false;
   let runReset = false;
   const query = async (sql: string) => {
@@ -154,7 +154,7 @@ test("an unavailable proposal can be retried without bypassing the queue cap", a
       sql.includes("FROM roblox_autofix_proposals")
     ) {
       return {
-        rows: [{ run_id: runId, status: "unable" }],
+        rows: [{ run_id: runId, status: "ready" }],
         rowCount: 1,
       };
     }
@@ -169,7 +169,7 @@ test("an unavailable proposal can be retried without bypassing the queue cap", a
       sql.includes("FROM roblox_autofix_proposals")
     ) {
       assert.match(sql, /'queued', 'processing', 'ready', 'conflict'/);
-      return { rows: [{ count: 14 }], rowCount: 1 };
+      return { rows: [{ count: 15 }], rowCount: 1 };
     }
     if (sql.includes("DELETE FROM roblox_autofix_files")) {
       return { rows: [], rowCount: 0 };

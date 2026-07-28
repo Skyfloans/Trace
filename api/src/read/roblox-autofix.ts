@@ -385,11 +385,14 @@ export async function registerRobloxAutofixRoutes(
             [proposalId, session.project_id],
           );
           const current = proposal.rows[0];
-          if (!current || !["unable", "failed"].includes(current.status)) {
+          if (
+            !current ||
+            !["ready", "conflict", "unable", "failed"].includes(current.status)
+          ) {
             throw new ReadApiError(
               409,
               "autofix_retry_invalid",
-              "Only an unavailable or failed request can be retried.",
+              "Only a completed, conflicted, unavailable, or failed request can be retried.",
             );
           }
           const active = await client.query(
@@ -413,10 +416,10 @@ export async function registerRobloxAutofixRoutes(
                AND status IN ('queued', 'processing', 'ready', 'conflict')`,
             [session.project_id],
           );
-          if (
-            Number(outstanding.rows[0]?.count ?? 0) >=
-              MAX_AUTOFIX_PROPOSALS
-          ) {
+          const occupiedSlots =
+            Number(outstanding.rows[0]?.count ?? 0) -
+            (["ready", "conflict"].includes(current.status) ? 1 : 0);
+          if (occupiedSlots >= MAX_AUTOFIX_PROPOSALS) {
             throw new ReadApiError(
               409,
               "autofix_retry_capacity",

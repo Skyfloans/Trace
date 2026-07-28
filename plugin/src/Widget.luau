@@ -314,7 +314,7 @@ local function reviewStatusText(status: string): string
 	elseif status == "conflict" then
 		return "Needs another look"
 	elseif status == "unable" then
-		return "Needs source"
+		return "Needs investigation"
 	elseif status == "failed" then
 		return "Preparation failed"
 	end
@@ -839,7 +839,7 @@ function Widget:_renderDetail(palette: Palette)
 			if proposal.status == "failed" then "error" else "info",
 			48
 		)
-		local retry = createButton(self.content, "Retry source matching", "secondary", palette, 80)
+		local retry = createButton(self.content, "Retry investigation", "secondary", palette, 80)
 		retry.MouseButton1Click:Connect(function() self.callbacks.onRetry(proposal.id) end)
 		local dismiss = createButton(self.content, "Dismiss request", "quiet", palette, 90)
 		dismiss.MouseButton1Click:Connect(function() self.callbacks.onReject(proposal.id) end)
@@ -879,6 +879,8 @@ function Widget:_renderDetail(palette: Palette)
 	if proposal.status == "ready" or proposal.status == "conflict" then
 		local accept = createButton(self.content, "Accept and apply changes", "primary", palette, 80)
 		accept.MouseButton1Click:Connect(function() self.callbacks.onAccept(proposal.id) end)
+		local retry = createButton(self.content, "Regenerate root-cause fix", "secondary", palette, 85)
+		retry.MouseButton1Click:Connect(function() self.callbacks.onRetry(proposal.id) end)
 		local reject = createButton(self.content, "Reject proposal", "danger", palette, 90)
 		reject.MouseButton1Click:Connect(function() self.callbacks.onReject(proposal.id) end)
 	end
