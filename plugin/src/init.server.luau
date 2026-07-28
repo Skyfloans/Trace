@@ -9,6 +9,7 @@ local Widget = require(script.Widget)
 local API_BASE_URL = "https://api.tracestack.gg"
 local CREDENTIAL_SETTING_PREFIX = "TraceAutofixCredentialV1"
 local INSTALL_ID_SETTING = "TraceAutofixInstallIdV1"
+local TRACE_LOGO_IMAGE = "rbxassetid://94183872785973"
 
 type PairingRequest = Api.PairingRequest
 type PluginSession = Api.PluginSession
@@ -33,7 +34,7 @@ else
 end
 
 local toolbar = plugin:CreateToolbar("Trace")
-local toolbarButton = toolbar:CreateButton("TraceAutofix", "Open Trace Autofix", "", "Trace Autofix")
+local toolbarButton = toolbar:CreateButton("TraceAutofix", "Open Trace Autofix", TRACE_LOGO_IMAGE, "Trace Autofix")
 toolbarButton.ClickableWhenViewportHidden = true
 
 local widget
@@ -72,20 +73,6 @@ local function showConnected(session: PluginSession)
 	})
 end
 
-local function openPairingPage()
-	local pairing = activePairing
-	if not pairing then return end
-	local opened, openError = pcall(function() plugin:OpenWikiPage(pairing.browserUrl) end)
-	if not opened then
-		widget:setState({
-			kind = "code",
-			browserUrl = pairing.browserUrl,
-			errorMessage = "Studio could not open your browser. Copy the link below into a browser.",
-		})
-		warn("[Trace Autofix] Could not open browser:", openError)
-	end
-end
-
 local function startPairing()
 	local context, contextError = studioContext()
 	if not context then
@@ -107,7 +94,6 @@ local function startPairing()
 			kind = "code",
 			browserUrl = activePairing.browserUrl,
 		})
-		openPairingPage()
 	end)
 end
 
@@ -151,13 +137,12 @@ end
 widget = Widget.new(plugin, {
 	onConnect = startPairing,
 	onDisconnect = disconnect,
-	onOpenBrowser = openPairingPage,
 	onStartOver = function()
 		activePairing = nil
 		showConnect(nil)
 	end,
 	onVerify = verifyPairing,
-})
+}, TRACE_LOGO_IMAGE)
 
 toolbarButton.Click:Connect(function() widget:setEnabled(not widget:isEnabled()) end)
 widget:onEnabledChanged(function() toolbarButton:SetActive(widget:isEnabled()) end)

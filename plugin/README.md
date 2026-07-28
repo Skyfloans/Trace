@@ -17,6 +17,13 @@ The generated `.rbxmx` contains the plugin `Script` and its `Api`, `Theme`, and
 `Widget` `ModuleScript` children. It does not contain any scripts from the open
 game.
 
+## Trace icon asset
+
+Roblox toolbar and `ImageLabel` icons must use a Roblox-hosted image asset ID.
+Upload `plugin/assets/trace-plugin-icon.png` as an image, then set
+`TRACE_LOGO_IMAGE` in `plugin/src/init.server.luau` to
+`rbxassetid://<your-image-id>` before building.
+
 For local development, enable **Plugin Debugging Enabled** in Studio settings.
 Insert the built file into Studio, select its root `Script`, and choose
 **Plugins → Save as Local Plugin**. Work from the copy under
@@ -26,9 +33,11 @@ Insert the built file into Studio, select its root `Script`, and choose
 
 1. The plugin reads `StudioService:GetUserId()`, `game.GameId`, and
    `game.PlaceId`, then creates a ten-minute pairing request.
-2. Trace opens `tracestack.gg/plugin-connect` in the browser. The signed-in
-   website account must match the Roblox account open in Studio and must be an
-   owner or admin of the Trace project mapped to the current Studio universe.
+2. Trace displays a secure `tracestack.gg/plugin-connect` link. Select it,
+   press `Cmd+C` on macOS or `Ctrl+C` on Windows, and paste it into a browser.
+   The signed-in website account must match the Roblox account open in Studio
+   and must be an owner or admin of the Trace project mapped to the current
+   Studio universe.
 3. The website shows a two-digit, one-time number. The plugin submits that
    number together with a high-entropy proof returned only to this Studio
    request.

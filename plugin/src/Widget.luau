@@ -7,7 +7,6 @@ type Palette = Theme.Palette
 export type Callbacks = {
 	onConnect: () -> (),
 	onDisconnect: () -> (),
-	onOpenBrowser: () -> (),
 	onStartOver: () -> (),
 	onVerify: (code: string) -> (),
 }
@@ -28,8 +27,9 @@ export type ViewState = {
 local Widget = {}
 Widget.__index = Widget
 
-local FONT = Enum.Font.BuilderSans
-local FONT_MEDIUM = Enum.Font.BuilderSansMedium
+local FONT = Enum.Font.Gotham
+local FONT_MEDIUM = Enum.Font.GothamMedium
+local FONT_BOLD = Enum.Font.GothamBold
 local MONO = Enum.Font.RobotoMono
 
 local function addCorner(parent: Instance, radius: number)
@@ -135,48 +135,61 @@ local function createButton(
 	return button
 end
 
-local function createHeader(parent: Instance, palette: Palette, order: number)
+local function createHeader(parent: Instance, palette: Palette, logoImage: string, order: number)
 	local header = Instance.new("Frame")
 	header.Name = "Header"
 	header.BackgroundTransparency = 1
 	header.LayoutOrder = order
-	header.Size = UDim2.new(1, 0, 0, 44)
+	header.Size = UDim2.new(1, 0, 0, 46)
 	header.Parent = parent
 
 	local mark = Instance.new("Frame")
 	mark.Name = "TraceMark"
-	mark.BackgroundColor3 = palette.accent
-	mark.Position = UDim2.fromOffset(0, 4)
-	mark.Size = UDim2.fromOffset(30, 30)
-	addCorner(mark, 7)
+	mark.BackgroundColor3 = palette.accent:Lerp(palette.main, 0.86)
+	mark.Position = UDim2.fromOffset(0, 3)
+	mark.Size = UDim2.fromOffset(34, 34)
+	addCorner(mark, 8)
+	addStroke(mark, palette.accent:Lerp(palette.main, 0.55))
 	mark.Parent = header
 
-	local markText = Instance.new("TextLabel")
-	markText.BackgroundTransparency = 1
-	markText.Font = FONT_MEDIUM
-	markText.Size = UDim2.fromScale(1, 1)
-	markText.Text = "t"
-	markText.TextColor3 = palette.accentInk
-	markText.TextSize = 21
-	markText.Parent = mark
+	if logoImage ~= "" then
+		local logo = Instance.new("ImageLabel")
+		logo.Name = "Logo"
+		logo.BackgroundTransparency = 1
+		logo.Image = logoImage
+		logo.ImageColor3 = palette.accent
+		logo.Position = UDim2.fromOffset(6, 5)
+		logo.Size = UDim2.new(1, -12, 1, -10)
+		logo.ScaleType = Enum.ScaleType.Fit
+		logo.Parent = mark
+	else
+		local markText = Instance.new("TextLabel")
+		markText.BackgroundTransparency = 1
+		markText.Font = FONT_BOLD
+		markText.Size = UDim2.fromScale(1, 1)
+		markText.Text = "t"
+		markText.TextColor3 = palette.accent
+		markText.TextSize = 20
+		markText.Parent = mark
+	end
 
 	local brand = Instance.new("TextLabel")
 	brand.BackgroundTransparency = 1
-	brand.Font = FONT_MEDIUM
-	brand.Position = UDim2.fromOffset(40, 1)
-	brand.Size = UDim2.new(1, -40, 0, 22)
-	brand.Text = "Trace"
+	brand.Font = FONT_BOLD
+	brand.Position = UDim2.fromOffset(45, 0)
+	brand.Size = UDim2.new(1, -45, 0, 24)
+	brand.Text = "trace"
 	brand.TextColor3 = palette.text
-	brand.TextSize = 16
+	brand.TextSize = 17
 	brand.TextXAlignment = Enum.TextXAlignment.Left
 	brand.Parent = header
 
 	local product = Instance.new("TextLabel")
 	product.BackgroundTransparency = 1
 	product.Font = FONT_MEDIUM
-	product.Position = UDim2.fromOffset(40, 22)
-	product.Size = UDim2.new(1, -40, 0, 16)
-	product.Text = "AUTOFIX"
+	product.Position = UDim2.fromOffset(45, 23)
+	product.Size = UDim2.new(1, -45, 0, 16)
+	product.Text = "Autofix for Studio"
 	product.TextColor3 = palette.accent
 	product.TextSize = 10
 	product.TextXAlignment = Enum.TextXAlignment.Left
@@ -251,7 +264,7 @@ local function createMessage(parent: Instance, palette: Palette, text: string, t
 	message.Parent = parent
 end
 
-function Widget.new(plugin: Plugin, callbacks: Callbacks)
+function Widget.new(plugin: Plugin, callbacks: Callbacks, logoImage: string)
 	local widgetInfo = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 350, 390, 300, 320)
 	local dockWidget = plugin:CreateDockWidgetPluginGuiAsync("TraceAutofixAuthentication", widgetInfo)
 	dockWidget.Name = "TraceAutofix"
@@ -285,6 +298,7 @@ function Widget.new(plugin: Plugin, callbacks: Callbacks)
 		callbacks = callbacks,
 		content = content,
 		dockWidget = dockWidget,
+		logoImage = logoImage,
 		state = {
 			kind = "connect",
 		} :: ViewState,
@@ -373,17 +387,49 @@ function Widget:_renderCode(palette: Palette)
 	createLabel(self.content, "Verify this Studio", 18, palette.text, FONT_MEDIUM, 10)
 	createLabel(
 		self.content,
-		"Trace opened a secure browser page. Authorize the request there, then type the two-digit number below.",
+		"Copy this secure link into your browser, authorize the request on Trace, then enter the two-digit code.",
 		12,
 		palette.muted,
 		FONT,
 		20
 	)
 
-	local openButton = createButton(self.content, "Open Trace website", "secondary", palette, 30)
-	openButton.MouseButton1Click:Connect(self.callbacks.onOpenBrowser)
+	local browserUrl = self.state.browserUrl or "https://tracestack.gg"
+	local link = Instance.new("TextBox")
+	link.Name = "ConnectionLink"
+	link.BackgroundColor3 = palette.input
+	link.ClearTextOnFocus = false
+	link.Font = MONO
+	link.LayoutOrder = 30
+	link.Size = UDim2.new(1, 0, 0, 40)
+	link.Text = browserUrl
+	link.TextColor3 = palette.text
+	link.TextSize = 10
+	link.TextTruncate = Enum.TextTruncate.AtEnd
+	link.TextXAlignment = Enum.TextXAlignment.Left
+	addCorner(link, 7)
+	addStroke(link, palette.inputBorder)
 
-	local codeLabel = createLabel(self.content, "TWO-DIGIT CODE", 10, palette.muted, FONT_MEDIUM, 40)
+	local linkPadding = Instance.new("UIPadding")
+	linkPadding.PaddingLeft = UDim.new(0, 10)
+	linkPadding.PaddingRight = UDim.new(0, 10)
+	linkPadding.Parent = link
+	link.Parent = self.content
+
+	link.FocusLost:Connect(function() link.Text = browserUrl end)
+	link:GetPropertyChangedSignal("Text"):Connect(function()
+		if not link:IsFocused() and link.Text ~= browserUrl then link.Text = browserUrl end
+	end)
+
+	local selectLink = createButton(self.content, "Select connection link", "secondary", palette, 40)
+	selectLink.MouseButton1Click:Connect(function()
+		link:CaptureFocus()
+		link.CursorPosition = #browserUrl + 1
+		link.SelectionStart = 1
+	end)
+	createLabel(self.content, "Press ⌘C, then paste the link into Safari or Chrome.", 10, palette.muted, FONT, 45)
+
+	local codeLabel = createLabel(self.content, "TWO-DIGIT CODE", 10, palette.muted, FONT_MEDIUM, 50)
 	codeLabel.TextWrapped = false
 
 	local code = Instance.new("TextBox")
@@ -391,7 +437,7 @@ function Widget:_renderCode(palette: Palette)
 	code.BackgroundColor3 = palette.input
 	code.ClearTextOnFocus = false
 	code.Font = MONO
-	code.LayoutOrder = 50
+	code.LayoutOrder = 60
 	code.PlaceholderText = "••"
 	code.PlaceholderColor3 = palette.muted
 	code.Size = UDim2.new(1, 0, 0, 52)
@@ -408,9 +454,9 @@ function Widget:_renderCode(palette: Palette)
 		if code.Text ~= digits then code.Text = digits end
 	end)
 
-	if self.state.errorMessage then createMessage(self.content, palette, self.state.errorMessage, "error", 60) end
+	if self.state.errorMessage then createMessage(self.content, palette, self.state.errorMessage, "error", 70) end
 
-	local verify = createButton(self.content, self.state.actionLabel or "Verify and connect", "primary", palette, 70)
+	local verify = createButton(self.content, self.state.actionLabel or "Verify and connect", "primary", palette, 80)
 	local function submit()
 		if #code.Text == 2 then self.callbacks.onVerify(code.Text) end
 	end
@@ -419,14 +465,8 @@ function Widget:_renderCode(palette: Palette)
 		if enterPressed then submit() end
 	end)
 
-	local startOver = createButton(self.content, "Start over", "quiet", palette, 80)
+	local startOver = createButton(self.content, "Start over", "quiet", palette, 90)
 	startOver.MouseButton1Click:Connect(self.callbacks.onStartOver)
-
-	if self.state.browserUrl then
-		local url = createLabel(self.content, self.state.browserUrl, 9, palette.muted, MONO, 90)
-		url.TextTruncate = Enum.TextTruncate.AtEnd
-		url.TextWrapped = false
-	end
 end
 
 function Widget:_renderConnected(palette: Palette)
@@ -451,7 +491,7 @@ function Widget:_render()
 	local palette = Theme.read()
 	local scrolling = self.content.Parent :: ScrollingFrame
 	scrolling.BackgroundColor3 = palette.main
-	createHeader(self.content, palette, 0)
+	createHeader(self.content, palette, self.logoImage, 0)
 
 	if self.state.kind == "connect" then
 		self:_renderConnect(palette)
