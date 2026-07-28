@@ -185,41 +185,103 @@ try {
            < EXCLUDED.classified_at`,
   );
 
-  const applied = await client.query(
-    `UPDATE display_error_groups groups
-     SET ai_category = cached.category,
-         ai_confidence = cached.confidence,
-         ai_reason = cached.reason,
-         ai_classified_at = cached.classified_at,
-         ai_model = cached.model,
-         ai_prompt_version = cached.prompt_version,
-         ai_status = 'classified'
-     FROM ai_error_family_classifications cached
-     WHERE groups.ai_family_key = cached.family_key
-       AND (
-         groups.ai_status <> 'classified'
-         OR groups.ai_prompt_version < cached.prompt_version
-       )`,
-  );
+  let appliedGroups = 0;
+  while (true) {
+    const applied = await client.query(
+      `WITH candidates AS MATERIALIZED (
+         SELECT groups.id, cached.family_key
+         FROM display_error_groups groups
+         JOIN ai_error_family_classifications cached
+           ON cached.family_key = groups.ai_family_key
+         WHERE groups.ai_status <> 'classified'
+            OR groups.ai_prompt_version < cached.prompt_version
+         ORDER BY groups.id
+         LIMIT $1
+       )
+       UPDATE display_error_groups groups
+       SET ai_category = cached.category,
+           ai_confidence = cached.confidence,
+           ai_reason = cached.reason,
+           ai_classified_at = cached.classified_at,
+           ai_model = cached.model,
+           ai_prompt_version = cached.prompt_version,
+           ai_status = 'classified'
+       FROM candidates
+       JOIN ai_error_family_classifications cached
+         ON cached.family_key = candidates.family_key
+       WHERE groups.id = candidates.id`,
+      [batchSize],
+    );
+    const count = applied.rowCount ?? 0;
+    appliedGroups += count;
+    console.log(JSON.stringify({
+      phase: "cached_groups",
+      count,
+      appliedGroups,
+    }));
+    if (count < batchSize) break;
+  }
 
-  await client.query(
-    `UPDATE display_error_rollups_hourly rollups
-     SET ai_category = cached.category
-     FROM display_error_groups groups
-     JOIN ai_error_family_classifications cached
-       ON cached.family_key = groups.ai_family_key
-     WHERE rollups.display_group_id = groups.id
-       AND rollups.ai_category IS DISTINCT FROM cached.category`,
-  );
+  let appliedRollups = 0;
+  while (true) {
+    const applied = await client.query(
+      `WITH candidates AS MATERIALIZED (
+         SELECT
+           rollups.ctid AS row_id,
+           cached.category
+         FROM display_error_rollups_hourly rollups
+         JOIN display_error_groups groups
+           ON groups.id = rollups.display_group_id
+         JOIN ai_error_family_classifications cached
+           ON cached.family_key = groups.ai_family_key
+         WHERE rollups.ai_category IS DISTINCT FROM cached.category
+         ORDER BY rollups.display_group_id, rollups.bucket_start
+         LIMIT $1
+       )
+       UPDATE display_error_rollups_hourly rollups
+       SET ai_category = candidates.category
+       FROM candidates
+       WHERE rollups.ctid = candidates.row_id`,
+      [batchSize],
+    );
+    const count = applied.rowCount ?? 0;
+    appliedRollups += count;
+    console.log(JSON.stringify({
+      phase: "cached_rollups",
+      count,
+      appliedRollups,
+    }));
+    if (count < batchSize) break;
+  }
 
-  const removedCachedJobs = await client.query(
-    `DELETE FROM ai_classification_jobs jobs
-     USING display_error_groups groups,
-           ai_error_family_classifications cached
-     WHERE jobs.target_type = 'error'
-       AND jobs.target_id = groups.id
-       AND groups.ai_family_key = cached.family_key`,
-  );
+  let removedCachedJobs = 0;
+  while (true) {
+    const removed = await client.query(
+      `WITH candidates AS MATERIALIZED (
+         SELECT jobs.ctid AS row_id
+         FROM ai_classification_jobs jobs
+         JOIN display_error_groups groups
+           ON jobs.target_type = 'error'
+          AND jobs.target_id = groups.id
+         JOIN ai_error_family_classifications cached
+           ON cached.family_key = groups.ai_family_key
+         ORDER BY jobs.target_id
+         LIMIT $1
+       )
+       DELETE FROM ai_classification_jobs jobs
+       USING candidates
+       WHERE jobs.ctid = candidates.row_id`,
+      [batchSize],
+    );
+    const count = removed.rowCount ?? 0;
+    removedCachedJobs += count;
+    console.log(JSON.stringify({
+      phase: "cached_jobs",
+      count,
+      removedCachedJobs,
+    }));
+    if (count < batchSize) break;
+  }
 
   const promoted = await client.query(
     `WITH representatives AS MATERIALIZED (
@@ -265,8 +327,9 @@ try {
     phase: "complete",
     keyed,
     seededFamilies: seeded.rowCount ?? 0,
-    appliedGroups: applied.rowCount ?? 0,
-    removedCachedJobs: removedCachedJobs.rowCount ?? 0,
+    appliedGroups,
+    appliedRollups,
+    removedCachedJobs,
     promotedFamilies: promoted.rowCount ?? 0,
     ...status.rows[0],
   }));
