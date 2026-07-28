@@ -10,7 +10,7 @@ const createRunSchema = z.object({
   limit: z.number().int().min(1).max(MAX_AUTOFIX_PROPOSALS).default(15),
 });
 const reviewSchema = z.object({
-  action: z.enum(["accepted", "rejected", "conflict"]),
+  action: z.enum(["accepted", "rejected", "conflict", "retry"]),
   message: z.string().trim().max(500).optional(),
 });
 
@@ -366,11 +366,108 @@ export async function registerRobloxAutofixRoutes(
       const session = await loadPluginSession(pool, request);
       const { proposalId } = proposalParamsSchema.parse(request.params);
       const body = reviewSchema.parse(request.body);
+      if (body.action === "retry") {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          await client.query(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+            [`roblox-autofix:${session.project_id}`],
+          );
+          const proposal = await client.query<{
+            run_id: string;
+            status: string;
+          }>(
+            `SELECT run_id, status
+             FROM roblox_autofix_proposals
+             WHERE id = $1 AND project_id = $2
+             FOR UPDATE`,
+            [proposalId, session.project_id],
+          );
+          const current = proposal.rows[0];
+          if (!current || !["unable", "failed"].includes(current.status)) {
+            throw new ReadApiError(
+              409,
+              "autofix_retry_invalid",
+              "Only an unavailable or failed request can be retried.",
+            );
+          }
+          const active = await client.query(
+            `SELECT id
+             FROM roblox_autofix_runs
+             WHERE project_id = $1 AND status IN ('queued', 'processing')
+             LIMIT 1`,
+            [session.project_id],
+          );
+          if (active.rows[0]) {
+            throw new ReadApiError(
+              409,
+              "autofix_retry_busy",
+              "Trace is already preparing another request. Retry this one after it finishes.",
+            );
+          }
+          const outstanding = await client.query<{ count: number }>(
+            `SELECT COUNT(*)::int AS count
+             FROM roblox_autofix_proposals
+             WHERE project_id = $1
+               AND status IN ('queued', 'processing', 'ready', 'conflict')`,
+            [session.project_id],
+          );
+          if (
+            Number(outstanding.rows[0]?.count ?? 0) >=
+              MAX_AUTOFIX_PROPOSALS
+          ) {
+            throw new ReadApiError(
+              409,
+              "autofix_retry_capacity",
+              "Review or reject another prepared fix before retrying this request.",
+            );
+          }
+          await client.query(
+            "DELETE FROM roblox_autofix_files WHERE proposal_id = $1",
+            [proposalId],
+          );
+          await client.query(
+            `UPDATE roblox_autofix_proposals
+             SET status = 'queued',
+                 title = NULL,
+                 summary = NULL,
+                 confidence = NULL,
+                 risk = NULL,
+                 failure_reason = NULL,
+                 reviewed_by_credential_id = NULL,
+                 reviewed_at = NULL,
+                 updated_at = now()
+             WHERE id = $1`,
+            [proposalId],
+          );
+          await client.query(
+            `UPDATE roblox_autofix_runs
+             SET status = 'queued',
+                 finished_at = NULL,
+                 last_error = NULL
+             WHERE id = $1`,
+            [current.run_id],
+          );
+          await client.query("COMMIT");
+          noStore(reply);
+          return {
+            id: proposalId,
+            status: "queued",
+            reviewedAt: null,
+          };
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
       const allowedCurrent =
         body.action === "accepted"
           ? ["ready", "conflict"]
           : body.action === "rejected"
-            ? ["ready", "conflict"]
+            ? ["ready", "conflict", "unable", "failed"]
             : ["ready"];
       const result = await pool.query(
         `UPDATE roblox_autofix_proposals

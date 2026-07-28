@@ -133,3 +133,88 @@ test("plugin autofix does not queue work when OpenRouter or storage is absent", 
   assert.equal(response.json().error.code, "autofix_not_configured");
   await app.close();
 });
+
+test("an unavailable proposal can be retried without bypassing the queue cap", async () => {
+  let proposalReset = false;
+  let runReset = false;
+  const query = async (sql: string) => {
+    if (sql.includes("UPDATE roblox_plugin_credentials credentials")) {
+      return { rows: [pluginSession()], rowCount: 1 };
+    }
+    if (
+      sql === "BEGIN" ||
+      sql === "COMMIT" ||
+      sql === "ROLLBACK" ||
+      sql.includes("pg_advisory_xact_lock")
+    ) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("SELECT run_id, status") &&
+      sql.includes("FROM roblox_autofix_proposals")
+    ) {
+      return {
+        rows: [{ run_id: runId, status: "unable" }],
+        rowCount: 1,
+      };
+    }
+    if (
+      sql.includes("FROM roblox_autofix_runs") &&
+      sql.includes("status IN ('queued', 'processing')")
+    ) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("COUNT(*)::int AS count") &&
+      sql.includes("FROM roblox_autofix_proposals")
+    ) {
+      assert.match(sql, /'queued', 'processing', 'ready', 'conflict'/);
+      return { rows: [{ count: 14 }], rowCount: 1 };
+    }
+    if (sql.includes("DELETE FROM roblox_autofix_files")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("UPDATE roblox_autofix_proposals") &&
+      sql.includes("SET status = 'queued'")
+    ) {
+      proposalReset = true;
+      return { rows: [], rowCount: 1 };
+    }
+    if (
+      sql.includes("UPDATE roblox_autofix_runs") &&
+      sql.includes("SET status = 'queued'")
+    ) {
+      runReset = true;
+      return { rows: [], rowCount: 1 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const client = { query, release: () => undefined } as unknown as PoolClient;
+  const pool = {
+    query,
+    connect: async () => client,
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "https://tracestack.gg",
+    null,
+    pool,
+    null,
+    { available: true, model: "openai/gpt-5.4-nano" },
+  );
+
+  const response = await app.inject({
+    method: "POST",
+    url:
+      "/v1/plugin-autofix/proposals/60000000-0000-4000-8000-000000000001/review",
+    headers: { authorization: `Bearer ${"t".repeat(43)}` },
+    payload: { action: "retry" },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().status, "queued");
+  assert.equal(proposalReset, true);
+  assert.equal(runReset, true);
+  await app.close();
+});

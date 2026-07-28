@@ -157,6 +157,93 @@ test("resolves one source script without guessing between duplicate names", () =
   assert.equal(findTargetScript(scripts, "Controller", null), null);
 });
 
+test("maps runtime player containers back to editable Studio scripts", () => {
+  const scripts: PlaceScript[] = [
+    {
+      className: "LocalScript",
+      name: "ChangeConveyorClient",
+      path: "StarterPlayer.StarterPlayerScripts.ChangeConveyorClient",
+      source: "return nil",
+    },
+    {
+      className: "LocalScript",
+      name: "Store",
+      path: "StarterGui.Shop.Store",
+      source: "return nil",
+    },
+    {
+      className: "LocalScript",
+      name: "ToolClient",
+      path: "StarterPack.Hammer.ToolClient",
+      source: "return nil",
+    },
+    {
+      className: "LocalScript",
+      name: "CharacterClient",
+      path: "StarterPlayer.StarterCharacterScripts.CharacterClient",
+      source: "return nil",
+    },
+  ];
+
+  assert.equal(
+    findTargetScript(
+      scripts,
+      "Players.<PLAYER_NAME>.PlayerScripts.ChangeConveyorClient:12",
+      null,
+    )?.path,
+    "StarterPlayer.StarterPlayerScripts.ChangeConveyorClient",
+  );
+  assert.equal(
+    findTargetScript(scripts, "Players.skyfloans.PlayerGui.Shop.Store:8", null)
+      ?.path,
+    "StarterGui.Shop.Store",
+  );
+  assert.equal(
+    findTargetScript(
+      scripts,
+      "Players.skyfloans.Backpack.Hammer.ToolClient:27",
+      null,
+    )?.path,
+    "StarterPack.Hammer.ToolClient",
+  );
+  assert.equal(
+    findTargetScript(
+      scripts,
+      "Players.skyfloans.Character.CharacterClient:3",
+      null,
+    )?.path,
+    "StarterPlayer.StarterCharacterScripts.CharacterClient",
+  );
+});
+
+test("uses distinctive error identifiers to disambiguate an unnamed source", () => {
+  const scripts: PlaceScript[] = [
+    {
+      className: "ModuleScript",
+      name: "ProductLookup",
+      path: "ReplicatedStorage.Client.ProductLookup",
+      source:
+        "return MarketplaceService:GetProductInfo(id, Enum.InfoType.GamePass)",
+    },
+    {
+      className: "ModuleScript",
+      name: "Inventory",
+      path: "ReplicatedStorage.Client.Inventory",
+      source: "return DataStoreService:GetDataStore(\"Inventory\")",
+    },
+  ];
+
+  assert.equal(
+    findTargetScript(
+      scripts,
+      null,
+      null,
+      "[MonetizationClient] MarketplaceService::getProductInfo - GetGamePassInfo failed",
+    )?.path,
+    "ReplicatedStorage.Client.ProductLookup",
+  );
+});
+
 test("autofix instructions enforce bounded, decline-first behavior", async () => {
   const prompt = await readFile(
     new URL("../AUTOFIX_AGENT.md", import.meta.url),

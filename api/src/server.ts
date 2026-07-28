@@ -39,7 +39,7 @@ const oauth =
       }
     : null;
 const archiveStorage = createArchiveStorage(config);
-const autofixModel = config.AUTOFIX_MODEL ?? config.OPENROUTER_MODEL;
+const autofixModel = config.AUTOFIX_MODEL;
 const app = await buildApp(
   ingestionPool,
   config.WEB_ORIGIN,

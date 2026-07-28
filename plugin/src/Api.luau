@@ -240,7 +240,7 @@ function Api.reviewProposal(
 	self: Client,
 	token: string,
 	proposalId: string,
-	action: "accepted" | "rejected" | "conflict",
+	action: "accepted" | "rejected" | "conflict" | "retry",
 	message: string?
 ): ApiResponse<any>
 	return self:_request("POST", "/v1/plugin-autofix/proposals/" .. HttpService:UrlEncode(proposalId) .. "/review", {

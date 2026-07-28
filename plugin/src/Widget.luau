@@ -16,6 +16,7 @@ export type Callbacks = {
 	onOpenProposal: (proposalId: string) -> (),
 	onRefresh: () -> (),
 	onReject: (proposalId: string) -> (),
+	onRetry: (proposalId: string) -> (),
 	onStartOver: () -> (),
 	onVerify: (code: string) -> (),
 }
@@ -313,9 +314,9 @@ local function reviewStatusText(status: string): string
 	elseif status == "conflict" then
 		return "Needs another look"
 	elseif status == "unable" then
-		return "No safe fix"
+		return "Needs source"
 	elseif status == "failed" then
-		return "Fix failed"
+		return "Preparation failed"
 	end
 	return status
 end
@@ -369,14 +370,23 @@ local function createProposalCard(
 	meta.Font = FONT
 	meta.Position = UDim2.fromOffset(11, 65)
 	meta.Size = UDim2.new(1, -32, 0, 30)
-	meta.Text = string.format(
-		"%s  ·  %d event%s  ·  %d file%s",
-		proposal.sourceScript or "Unknown script",
-		proposal.eventCount,
-		if proposal.eventCount == 1 then "" else "s",
-		proposal.fileCount,
-		if proposal.fileCount == 1 then "" else "s"
-	)
+	if proposal.fileCount > 0 then
+		meta.Text = string.format(
+			"%s  ·  %d event%s  ·  %d file%s",
+			proposal.sourceScript or "Unknown script",
+			proposal.eventCount,
+			if proposal.eventCount == 1 then "" else "s",
+			proposal.fileCount,
+			if proposal.fileCount == 1 then "" else "s"
+		)
+	else
+		meta.Text = string.format(
+			"%s  ·  %d event%s  ·  No change prepared",
+			proposal.sourceScript or "Unknown script",
+			proposal.eventCount,
+			if proposal.eventCount == 1 then "" else "s"
+		)
+	end
 	meta.TextColor3 = palette.muted
 	meta.TextSize = 10
 	meta.TextTruncate = Enum.TextTruncate.AtEnd
@@ -805,6 +815,44 @@ function Widget:_renderDetail(palette: Palette)
 	if proposal.summary then createLabel(self.content, proposal.summary, 11, palette.muted, FONT, 40) end
 	if self.state.errorMessage then createMessage(self.content, palette, self.state.errorMessage, "error", 45) end
 	if self.state.notice then createMessage(self.content, palette, self.state.notice, "success", 46) end
+	if proposal.status == "queued" or proposal.status == "processing" then
+		createMessage(
+			self.content,
+			palette,
+			if proposal.status == "queued"
+				then "This request is queued. Trace will prepare its code change shortly."
+				else "Trace is reading the relevant scripts and preparing a code change.",
+			"info",
+			47
+		)
+		return
+	end
+	if proposal.status == "unable" or proposal.status == "failed" then
+		createLabel(self.content, "No reviewable code change", 14, palette.text, FONT_MEDIUM, 47)
+		createMessage(
+			self.content,
+			palette,
+			proposal.failureReason
+				or if proposal.status == "failed"
+					then "Trace encountered an error before it could prepare a code change."
+					else "Trace did not have enough source evidence to prepare a safe change.",
+			if proposal.status == "failed" then "error" else "info",
+			48
+		)
+		local retry = createButton(self.content, "Retry source matching", "secondary", palette, 80)
+		retry.MouseButton1Click:Connect(function() self.callbacks.onRetry(proposal.id) end)
+		local dismiss = createButton(self.content, "Dismiss request", "quiet", palette, 90)
+		dismiss.MouseButton1Click:Connect(function() self.callbacks.onReject(proposal.id) end)
+		createLabel(
+			self.content,
+			"No Studio scripts were changed. A diff appears only after Trace prepares a concrete edit.",
+			9,
+			palette.muted,
+			FONT,
+			100
+		)
+		return
+	end
 	if proposal.status == "conflict" then
 		createMessage(
 			self.content,
@@ -822,8 +870,8 @@ function Widget:_renderDetail(palette: Palette)
 		createMessage(
 			self.content,
 			palette,
-			proposal.failureReason or "Trace did not produce a safe code change for this bug.",
-			"info",
+			"Trace marked this request reviewable without attaching a script change. Refresh the request or dismiss it.",
+			"error",
 			55
 		)
 	end
@@ -834,14 +882,16 @@ function Widget:_renderDetail(palette: Palette)
 		local reject = createButton(self.content, "Reject proposal", "danger", palette, 90)
 		reject.MouseButton1Click:Connect(function() self.callbacks.onReject(proposal.id) end)
 	end
-	createLabel(
-		self.content,
-		"Applied edits are recorded as one Studio undo action. Trace never publishes the place.",
-		9,
-		palette.muted,
-		FONT,
-		100
-	)
+	if #proposal.files > 0 then
+		createLabel(
+			self.content,
+			"Applied edits are recorded as one Studio undo action. Trace never publishes the place.",
+			9,
+			palette.muted,
+			FONT,
+			100
+		)
+	end
 end
 
 function Widget:_render()

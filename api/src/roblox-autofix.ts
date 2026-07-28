@@ -116,23 +116,72 @@ function pathSegments(value: string): string[] {
   return normalizePath(value).split(".").filter(Boolean);
 }
 
+function studioPath(value: string): string {
+  const segments = pathSegments(value);
+  if (segments[0] === "game") segments.shift();
+  if (segments[0] !== "players" || segments.length < 4) {
+    return segments.join(".");
+  }
+  const container = segments[2];
+  const rest = segments.slice(3);
+  if (container === "playerscripts") {
+    return ["starterplayer", "starterplayerscripts", ...rest].join(".");
+  }
+  if (container === "playergui") {
+    return ["startergui", ...rest].join(".");
+  }
+  if (container === "backpack") {
+    return ["starterpack", ...rest].join(".");
+  }
+  if (container === "character") {
+    return ["starterplayer", "startercharacterscripts", ...rest].join(".");
+  }
+  return segments.join(".");
+}
+
 function suffixMatches(path: string, source: string): boolean {
-  const left = pathSegments(path);
-  const right = pathSegments(source);
+  const left = studioPath(path).split(".").filter(Boolean);
+  const right = studioPath(source).split(".").filter(Boolean);
   if (right.length === 0 || right.length > left.length) return false;
   return right.every(
     (segment, index) => segment === left[left.length - right.length + index],
   );
 }
 
+const SCRIPT_EVIDENCE_STOP_WORDS = new Set([
+  "attempt",
+  "error",
+  "failed",
+  "failure",
+  "function",
+  "index",
+  "internal",
+  "invalid",
+  "local",
+  "server",
+  "service",
+  "traceback",
+  "unknown",
+]);
+
+function evidenceIdentifiers(value: string): string[] {
+  const identifiers = value.match(/[A-Za-z_][A-Za-z0-9_]{4,}/g) ?? [];
+  return [...new Set(
+    identifiers
+      .map((identifier) => identifier.toLowerCase())
+      .filter((identifier) => !SCRIPT_EVIDENCE_STOP_WORDS.has(identifier)),
+  )].slice(0, 40);
+}
+
 export function findTargetScript(
   scripts: PlaceScript[],
   sourceScript: string | null,
   stack: string | null,
+  message: string | null = null,
 ): PlaceScript | null {
   if (sourceScript) {
     const exact = scripts.filter(
-      (script) => normalizePath(script.path) === normalizePath(sourceScript),
+      (script) => studioPath(script.path) === studioPath(sourceScript),
     );
     if (exact.length === 1) return exact[0]!;
     const suffix = scripts.filter((script) =>
@@ -141,18 +190,37 @@ export function findTargetScript(
     if (suffix.length === 1) return suffix[0]!;
   }
 
-  const evidence = `${sourceScript ?? ""}\n${stack ?? ""}`.toLowerCase();
+  const evidence = [
+    sourceScript ?? "",
+    stack ?? "",
+    message ?? "",
+  ].join("\n").toLowerCase();
+  const identifiers = evidenceIdentifiers(evidence);
   const scored = scripts
     .map((script) => {
       const path = script.path.toLowerCase();
       const name = script.name.toLowerCase();
-      let score = evidence.includes(path) ? 10 : 0;
-      if (name.length >= 3 && evidence.includes(name)) score += 3;
-      return { script, score };
+      const source = script.source.toLowerCase();
+      let score = evidence.includes(path) ? 100 : 0;
+      if (name.length >= 3 && evidence.includes(name)) score += 20;
+      const identifierMatches = identifiers.filter((identifier) =>
+        source.includes(identifier)
+      ).length;
+      score += Math.min(identifierMatches, 8);
+      return { identifierMatches, script, score };
     })
     .filter(({ score }) => score > 0)
     .sort((left, right) => right.score - left.score);
   if (!scored[0] || scored[1]?.score === scored[0].score) return null;
+  if (
+    scored[0].score < 20 &&
+    (
+      scored[0].identifierMatches < 2 ||
+      scored[0].score - (scored[1]?.score ?? 0) < 2
+    )
+  ) {
+    return null;
+  }
   return scored[0].script;
 }
 
@@ -298,7 +366,7 @@ async function requestFix(
           { role: "user", content: userContent },
         ],
         response_format: responseFormat(),
-        reasoning: { enabled: false, exclude: true },
+        reasoning: { effort: "medium", exclude: true },
         temperature: 0,
         max_completion_tokens: Math.min(
           MAX_OUTPUT_TOKENS,
@@ -545,6 +613,7 @@ async function processRun(
         scripts,
         proposal.source_script,
         proposal.normalized_stack,
+        proposal.normalized_message,
       );
       if (!target) {
         await markUnable(

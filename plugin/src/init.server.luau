@@ -430,6 +430,31 @@ local function rejectProposal(proposalId: string)
 	end)
 end
 
+local function retryProposal(proposalId: string)
+	local token = credential
+	local proposal = activeProposal
+	if not token or not proposal or proposal.id ~= proposalId then return end
+	widget:setState({
+		kind = "detail",
+		proposal = proposal,
+		notice = "Queueing this request with the improved source matcher…",
+	})
+	task.spawn(function()
+		local response = api:reviewProposal(token, proposalId, "retry", nil)
+		if not response.ok then
+			widget:setState({
+				kind = "detail",
+				proposal = proposal,
+				errorMessage = response.errorMessage or "Trace could not retry this request yet.",
+			})
+			return
+		end
+		activeProposal = nil
+		currentReviews = nil
+		refreshReviews(nil)
+	end)
+end
+
 widget = Widget.new(plugin, {
 	onAccept = acceptProposal,
 	onBack = function()
@@ -441,6 +466,7 @@ widget = Widget.new(plugin, {
 	onOpenProposal = openProposal,
 	onRefresh = function() refreshReviews(nil) end,
 	onReject = rejectProposal,
+	onRetry = retryProposal,
 	onStartOver = function()
 		activePairing = nil
 		showConnect(nil)
