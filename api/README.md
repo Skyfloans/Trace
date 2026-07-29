@@ -168,7 +168,7 @@ bug. Each request has a 45-second timeout, a 5,000-token output ceiling, and the
 whole run has a 120,000 input / 45,000 output token budget. Results below 0.80
 confidence, ambiguous source matches, oversized scripts, invented paths,
 unchanged source, or more than three edited scripts are recorded as `unable`
-without retry. Autofix defaults to `openai/gpt-5.4-nano` through
+without retry. Autofix defaults to `openai/gpt-5.6-luna` through
 `AUTOFIX_MODEL`, which can be upgraded independently of the classification
 model later.
 

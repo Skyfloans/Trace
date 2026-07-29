@@ -18,7 +18,7 @@ const environmentSchema = z
     ROBLOX_OAUTH_TOKEN_ENCRYPTION_KEY: z.string().trim().min(1).optional(),
     OPENROUTER_API_KEY: z.string().trim().min(20).optional(),
     OPENROUTER_MODEL: z.string().trim().min(1).default("openai/gpt-5.4-nano"),
-    AUTOFIX_MODEL: z.string().trim().min(1).default("openai/gpt-5.4-nano"),
+    AUTOFIX_MODEL: z.string().trim().min(1).default("openai/gpt-5.6-luna"),
     AI_CLASSIFICATION_BATCH_SIZE: z.coerce
       .number()
       .int()

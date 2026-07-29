@@ -72,7 +72,7 @@ export async function buildApp(
   archiveStorage: ArchiveStorage | null = null,
   autofix: { available: boolean; model: string } = {
     available: false,
-    model: "openai/gpt-5.4-nano",
+    model: "openai/gpt-5.6-luna",
   },
 ): Promise<FastifyInstance> {
   const app = Fastify({

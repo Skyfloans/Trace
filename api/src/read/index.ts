@@ -20,7 +20,7 @@ export async function registerReadApi(
   webOrigin = "http://localhost:5173",
   autofix: { available: boolean; model: string } = {
     available: false,
-    model: "openai/gpt-5.4-nano",
+    model: "openai/gpt-5.6-luna",
   },
 ): Promise<void> {
   const authenticate = createReadAuthenticator(pool);
