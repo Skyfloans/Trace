@@ -71,7 +71,9 @@ retried with the bounded cross-script investigation or dismissed. Reviewable
 proposals can also be regenerated when the displayed diff addresses a symptom
 instead of the root cause. Processing work has a two-minute lease; if a deploy
 or worker interruption leaves a request stuck, the server automatically
-requeues it.
+requeues it. The server-side solver can follow one bounded round of related
+scripts from the place manifest and combine necessary edits across as many as
+five scripts into one review.
 
 Before accepting, the plugin resolves every proposed path and reads the current
 editor source with `ScriptEditorService:GetEditorSource()`. If the source still

@@ -19,11 +19,16 @@ export const MAX_AUTOFIX_PROPOSALS = 15;
 export const AUTOFIX_SCHEDULE_INTERVAL_MS = 10 * 60 * 1_000;
 export const AUTOFIX_PROCESSING_LEASE_MS = 2 * 60 * 1_000;
 const AUTOFIX_RECOVERY_INTERVAL_MS = 60 * 1_000;
-const MAX_CHANGED_SCRIPTS = 3;
-const MAX_CONTEXT_SCRIPTS = 8;
+const MAX_CHANGED_SCRIPTS = 5;
+const MAX_EDITS_PER_SCRIPT = 8;
+const MAX_CONTEXT_REQUESTS = 6;
+const MAX_CONTEXT_EXPANSION_ROUNDS = 1;
+const MAX_INITIAL_CONTEXT_SCRIPTS = 4;
+const MAX_CONTEXT_SCRIPTS = 10;
 const MAX_SCRIPT_CHARS = 60_000;
 const MAX_CONTEXT_CHARS = 80_000;
-const MAX_OUTPUT_TOKENS = 5_000;
+const MAX_MANIFEST_CHARS = 60_000;
+const MAX_OUTPUT_TOKENS = 6_000;
 const MAX_RUN_INPUT_TOKENS = 120_000;
 const MAX_RUN_OUTPUT_TOKENS = 45_000;
 const MIN_CONFIDENCE = 0.8;
@@ -39,7 +44,7 @@ type AutofixRun = {
   sha256: string;
 };
 
-type AutofixProposal = {
+export type AutofixProposal = {
   id: string;
   error_group_id: string;
   normalized_message: string;
@@ -56,15 +61,21 @@ type OpenRouterUsage = {
 };
 
 const modelResultSchema = z.object({
-  outcome: z.enum(["fixed", "unable"]),
+  outcome: z.enum(["fixed", "unable", "need_context"]),
   title: z.string().trim().min(1).max(80),
   summary: z.string().trim().min(1).max(400),
   confidence: z.number().min(0).max(1),
   risk: z.enum(["low", "medium", "high"]),
   reason: z.string().trim().min(1).max(300),
+  contextRequests: z.array(
+    z.string().trim().min(1).max(1_000),
+  ).max(MAX_CONTEXT_REQUESTS),
   changes: z.array(z.object({
     path: z.string().trim().min(1).max(1_000),
-    proposedSource: z.string().max(1_000_000),
+    edits: z.array(z.object({
+      oldText: z.string().min(1).max(MAX_SCRIPT_CHARS),
+      newText: z.string().max(MAX_SCRIPT_CHARS),
+    })).min(1).max(MAX_EDITS_PER_SCRIPT),
   })).max(MAX_CHANGED_SCRIPTS),
 });
 
@@ -351,6 +362,125 @@ function contextFor(
   return selected;
 }
 
+function scriptManifest(
+  scripts: PlaceScript[],
+  proposal: AutofixProposal,
+): string[] {
+  const manifest: string[] = [];
+  let characters = 0;
+  const evidence = [
+    proposal.source_script ?? "",
+    proposal.normalized_stack ?? "",
+    proposal.normalized_message,
+  ].join("\n").toLowerCase();
+  const identifiers = evidenceIdentifiers(evidence);
+  const tag = leadingTag(proposal.normalized_message);
+  const ranked = scripts
+    .map((script) => ({
+      script,
+      score: discoveryScore(script, evidence, identifiers, tag).score,
+    }))
+    .sort((left, right) =>
+      right.score - left.score ||
+      left.script.path.localeCompare(right.script.path)
+    );
+  for (const { script } of ranked) {
+    const entry = `${script.className} ${script.path}`;
+    if (characters + entry.length > MAX_MANIFEST_CHARS) break;
+    manifest.push(entry);
+    characters += entry.length;
+  }
+  return manifest;
+}
+
+export function expandRequestedContext(
+  scripts: PlaceScript[],
+  current: PlaceScript[],
+  requests: string[],
+): PlaceScript[] {
+  const selected = new Map(current.map((script) => [script.path, script]));
+  let characters = current.reduce(
+    (total, script) => total + script.source.length,
+    0,
+  );
+  for (const request of requests) {
+    if (
+      selected.size >= MAX_CONTEXT_SCRIPTS ||
+      characters >= MAX_CONTEXT_CHARS
+    ) {
+      break;
+    }
+    const evidence = request.toLowerCase();
+    const identifiers = evidenceIdentifiers(evidence);
+    const candidates = scripts
+      .filter((script) => !selected.has(script.path))
+      .filter((script) => script.source.length <= MAX_SCRIPT_CHARS)
+      .map((script) => {
+        const path = script.path.toLowerCase();
+        const normalizedRequest = normalizePath(request);
+        const normalizedScript = normalizePath(script.path);
+        let score = 0;
+        if (
+          normalizedRequest === normalizedScript ||
+          evidence.includes(path)
+        ) {
+          score += 100;
+        } else if (
+          suffixMatches(script.path, request) ||
+          normalizedRequest.endsWith(`.${script.name.toLowerCase()}`)
+        ) {
+          score += 60;
+        } else if (
+          evidence.includes(script.name.toLowerCase()) &&
+          script.name.length >= 3
+        ) {
+          score += 25;
+        }
+        score += Math.min(
+          identifiers.filter((identifier) =>
+            script.source.toLowerCase().includes(identifier)
+          ).length,
+          8,
+        );
+        return { script, score };
+      })
+      .filter(({ score }) => score > 0)
+      .sort((left, right) =>
+        right.score - left.score ||
+        left.script.path.localeCompare(right.script.path)
+      );
+    const bestScore = candidates[0]?.score ?? 0;
+    for (const { script, score } of candidates) {
+      if (selected.size >= MAX_CONTEXT_SCRIPTS) break;
+      if (score < bestScore || bestScore < 20) break;
+      if (characters + script.source.length > MAX_CONTEXT_CHARS) continue;
+      selected.set(script.path, script);
+      characters += script.source.length;
+    }
+  }
+  return [...selected.values()];
+}
+
+export function applyExactEdits(
+  source: string,
+  edits: { oldText: string; newText: string }[],
+): string | null {
+  let proposed = source;
+  for (const edit of edits) {
+    if (edit.oldText === edit.newText) return null;
+    const first = proposed.indexOf(edit.oldText);
+    if (first < 0) return null;
+    if (proposed.indexOf(edit.oldText, first + edit.oldText.length) >= 0) {
+      return null;
+    }
+    proposed =
+      proposed.slice(0, first) +
+      edit.newText +
+      proposed.slice(first + edit.oldText.length);
+  }
+  return proposed === source ? null : proposed;
+}
+
 function responseFormat() {
   return {
     type: "json_schema",
@@ -360,12 +490,24 @@ function responseFormat() {
       schema: {
         type: "object",
         properties: {
-          outcome: { type: "string", enum: ["fixed", "unable"] },
+          outcome: {
+            type: "string",
+            enum: ["fixed", "unable", "need_context"],
+          },
           title: { type: "string", minLength: 1, maxLength: 80 },
           summary: { type: "string", minLength: 1, maxLength: 400 },
           confidence: { type: "number", minimum: 0, maximum: 1 },
           risk: { type: "string", enum: ["low", "medium", "high"] },
           reason: { type: "string", minLength: 1, maxLength: 300 },
+          contextRequests: {
+            type: "array",
+            maxItems: MAX_CONTEXT_REQUESTS,
+            items: {
+              type: "string",
+              minLength: 1,
+              maxLength: 1_000,
+            },
+          },
           changes: {
             type: "array",
             maxItems: MAX_CHANGED_SCRIPTS,
@@ -373,9 +515,29 @@ function responseFormat() {
               type: "object",
               properties: {
                 path: { type: "string", minLength: 1, maxLength: 1_000 },
-                proposedSource: { type: "string", maxLength: 1_000_000 },
+                edits: {
+                  type: "array",
+                  minItems: 1,
+                  maxItems: MAX_EDITS_PER_SCRIPT,
+                  items: {
+                    type: "object",
+                    properties: {
+                      oldText: {
+                        type: "string",
+                        minLength: 1,
+                        maxLength: MAX_SCRIPT_CHARS,
+                      },
+                      newText: {
+                        type: "string",
+                        maxLength: MAX_SCRIPT_CHARS,
+                      },
+                    },
+                    required: ["oldText", "newText"],
+                    additionalProperties: false,
+                  },
+                },
               },
-              required: ["path", "proposedSource"],
+              required: ["path", "edits"],
               additionalProperties: false,
             },
           },
@@ -387,6 +549,7 @@ function responseFormat() {
           "confidence",
           "risk",
           "reason",
+          "contextRequests",
           "changes",
         ],
         additionalProperties: false,
@@ -395,81 +558,208 @@ function responseFormat() {
   };
 }
 
-async function requestFix(
+export async function requestFix(
   options: AutofixWorkerOptions,
   proposal: AutofixProposal,
-  context: PlaceScript[],
+  initialContext: PlaceScript[],
+  allScripts: PlaceScript[],
   remainingInputTokens: number,
   remainingOutputTokens: number,
 ): Promise<{
   result: z.infer<typeof modelResultSchema>;
+  context: PlaceScript[];
   usage: OpenRouterUsage;
   estimatedInputTokens: number;
 }> {
-  const userContent = JSON.stringify({
-    bug: {
-      category: proposal.ai_category,
-      severity: proposal.level,
-      side: proposal.source,
-      message: proposal.normalized_message,
-      sourceScript: proposal.source_script,
-      stackTrace: proposal.normalized_stack,
-    },
-    scripts: context.map((script) => ({
-      path: script.path,
-      className: script.className,
-      source: script.source,
-    })),
-  });
-  const estimatedInputTokens = Math.ceil(
-    (AUTOFIX_SYSTEM_PROMPT.length + userContent.length) / 4,
-  );
-  if (estimatedInputTokens > remainingInputTokens) {
-    throw new Error("autofix_input_budget_exhausted");
-  }
-  if (remainingOutputTokens < 500) {
-    throw new Error("autofix_output_budget_exhausted");
-  }
+  let context = initialContext.slice(0, MAX_INITIAL_CONTEXT_SCRIPTS);
+  const manifest = scriptManifest(allScripts, proposal);
   const fetcher = options.fetchImplementation ?? fetch;
-  const response = await fetcher(
-    "https://openrouter.ai/api/v1/chat/completions",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${options.apiKey}`,
-        "HTTP-Referer": options.webOrigin,
-        "X-Title": "Trace Autofix",
-        "Content-Type": "application/json",
+  let totalInputTokens = 0;
+  let totalOutputTokens = 0;
+  let totalEstimatedInputTokens = 0;
+  let previousContextRequests: string[] = [];
+
+  for (
+    let round = 0;
+    round <= MAX_CONTEXT_EXPANSION_ROUNDS;
+    round += 1
+  ) {
+    const userContent = JSON.stringify({
+      bug: {
+        category: proposal.ai_category,
+        severity: proposal.level,
+        side: proposal.source,
+        message: proposal.normalized_message,
+        sourceScript: proposal.source_script,
+        stackTrace: proposal.normalized_stack,
       },
-      body: JSON.stringify({
-        model: options.model,
-        messages: [
-          { role: "system", content: AUTOFIX_SYSTEM_PROMPT },
-          { role: "user", content: userContent },
-        ],
-        response_format: responseFormat(),
-        reasoning: { effort: "medium", exclude: true },
-        temperature: 0,
-        max_completion_tokens: Math.min(
-          MAX_OUTPUT_TOKENS,
-          remainingOutputTokens,
-        ),
-      }),
-      signal: AbortSignal.timeout(45_000),
-    },
-  );
-  if (!response.ok) {
-    const body = (await response.text()).slice(0, 500);
-    throw new Error(`OpenRouter returned ${response.status}: ${body}`);
+      investigation: {
+        round: round + 1,
+        maxRounds: MAX_CONTEXT_EXPANSION_ROUNDS + 1,
+        canRequestMoreContext: round < MAX_CONTEXT_EXPANSION_ROUNDS,
+        previousContextRequests,
+        scriptManifest: manifest,
+      },
+      scripts: context.map((script) => ({
+        path: script.path,
+        className: script.className,
+        source: script.source,
+      })),
+    });
+    const estimatedInputTokens = Math.ceil(
+      (AUTOFIX_SYSTEM_PROMPT.length + userContent.length) / 4,
+    );
+    let result: z.infer<typeof modelResultSchema> | null = null;
+
+    for (let attempt = 0; attempt < 2 && !result; attempt += 1) {
+      if (
+        estimatedInputTokens >
+        remainingInputTokens - totalInputTokens
+      ) {
+        throw new Error("autofix_input_budget_exhausted");
+      }
+      if (remainingOutputTokens - totalOutputTokens < 500) {
+        throw new Error("autofix_output_budget_exhausted");
+      }
+      await options.pool.query(
+        `UPDATE roblox_autofix_proposals
+         SET updated_at = now()
+         WHERE id = $1 AND status = 'processing'`,
+        [proposal.id],
+      );
+      const response = await fetcher(
+        "https://openrouter.ai/api/v1/chat/completions",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${options.apiKey}`,
+            "HTTP-Referer": options.webOrigin,
+            "X-Title": "Trace Autofix",
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: options.model,
+            messages: [
+              { role: "system", content: AUTOFIX_SYSTEM_PROMPT },
+              {
+                role: "user",
+                content: attempt === 0
+                  ? userContent
+                  : `${userContent}\nThe previous response was malformed. Return only one complete object matching the JSON schema.`,
+              },
+            ],
+            response_format: responseFormat(),
+            provider: { require_parameters: true },
+            plugins: [{ id: "response-healing" }],
+            reasoning: { effort: "medium", exclude: true },
+            temperature: 0,
+            max_completion_tokens: Math.min(
+              MAX_OUTPUT_TOKENS,
+              remainingOutputTokens - totalOutputTokens,
+            ),
+          }),
+          signal: AbortSignal.timeout(45_000),
+        },
+      );
+      if (!response.ok) {
+        const body = (await response.text()).slice(0, 500);
+        throw new Error(`OpenRouter returned ${response.status}: ${body}`);
+      }
+      const completion = openRouterResponseSchema.parse(await response.json());
+      const content = completion.choices[0]?.message.content;
+      const inputTokens =
+        completion.usage?.prompt_tokens ?? estimatedInputTokens;
+      const outputTokens =
+        completion.usage?.completion_tokens ??
+        Math.ceil((content?.length ?? 0) / 4);
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+      totalEstimatedInputTokens += estimatedInputTokens;
+      if (!content) {
+        if (attempt === 1) {
+          throw new Error(
+            "OpenRouter returned no structured autofix content after one retry",
+          );
+        }
+        continue;
+      }
+      try {
+        result = modelResultSchema.parse(parseStructuredContent(content));
+      } catch (error) {
+        if (attempt === 1) {
+          const message = error instanceof Error ? error.message : String(error);
+          throw new Error(
+            `OpenRouter returned invalid structured autofix output after one retry: ${message}`,
+          );
+        }
+      }
+    }
+
+    if (!result) {
+      throw new Error("OpenRouter returned no valid structured autofix output");
+    }
+    if (result.outcome !== "need_context") {
+      return {
+        result,
+        context,
+        usage: {
+          prompt_tokens: totalInputTokens,
+          completion_tokens: totalOutputTokens,
+        },
+        estimatedInputTokens: totalEstimatedInputTokens,
+      };
+    }
+    if (
+      round >= MAX_CONTEXT_EXPANSION_ROUNDS ||
+      result.contextRequests.length === 0
+    ) {
+      return {
+        result: {
+          ...result,
+          outcome: "unable",
+          confidence: 0,
+          changes: [],
+          contextRequests: [],
+          reason:
+            "The bounded investigation ended before enough source evidence was available.",
+        },
+        context,
+        usage: {
+          prompt_tokens: totalInputTokens,
+          completion_tokens: totalOutputTokens,
+        },
+        estimatedInputTokens: totalEstimatedInputTokens,
+      };
+    }
+    const expanded = expandRequestedContext(
+      allScripts,
+      context,
+      result.contextRequests,
+    );
+    if (expanded.length === context.length) {
+      return {
+        result: {
+          ...result,
+          outcome: "unable",
+          confidence: 0,
+          changes: [],
+          contextRequests: [],
+          reason:
+            "Trace could not resolve the requested related scripts from the place manifest.",
+        },
+        context,
+        usage: {
+          prompt_tokens: totalInputTokens,
+          completion_tokens: totalOutputTokens,
+        },
+        estimatedInputTokens: totalEstimatedInputTokens,
+      };
+    }
+    previousContextRequests = result.contextRequests;
+    context = expanded;
   }
-  const completion = openRouterResponseSchema.parse(await response.json());
-  const content = completion.choices[0]?.message.content;
-  if (!content) throw new Error("OpenRouter returned no autofix content");
-  return {
-    result: modelResultSchema.parse(parseStructuredContent(content)),
-    usage: completion.usage ?? {},
-    estimatedInputTokens,
-  };
+
+  throw new Error("Autofix investigation exceeded its bounded rounds");
 }
 
 function sha256(value: string): string {
@@ -484,17 +774,32 @@ function runtimeCallCount(source: string, names: string[]): number {
     .reduce((count, line) => count + (line.match(pattern)?.length ?? 0), 0);
 }
 
-export function validateRootCauseChange(
-  baseSource: string,
-  proposedSource: string,
+export function validateRootCauseChanges(
+  changes: { baseSource: string; proposedSource: string }[],
 ): string | null {
-  const baseFailures = runtimeCallCount(baseSource, ["error", "assert"]);
-  const proposedFailures = runtimeCallCount(proposedSource, ["error", "assert"]);
+  const baseFailures = changes.reduce(
+    (total, change) =>
+      total + runtimeCallCount(change.baseSource, ["error", "assert"]),
+    0,
+  );
+  const proposedFailures = changes.reduce(
+    (total, change) =>
+      total + runtimeCallCount(change.proposedSource, ["error", "assert"]),
+    0,
+  );
   if (proposedFailures < baseFailures) {
     return "Trace rejected this change because it removed an existing error/assert signal instead of proving a root-cause fix.";
   }
-  const baseWarnings = runtimeCallCount(baseSource, ["warn"]);
-  const proposedWarnings = runtimeCallCount(proposedSource, ["warn"]);
+  const baseWarnings = changes.reduce(
+    (total, change) =>
+      total + runtimeCallCount(change.baseSource, ["warn"]),
+    0,
+  );
+  const proposedWarnings = changes.reduce(
+    (total, change) =>
+      total + runtimeCallCount(change.proposedSource, ["warn"]),
+    0,
+  );
   if (
     proposedWarnings < baseWarnings &&
     proposedFailures <= baseFailures
@@ -507,13 +812,25 @@ export function validateRootCauseChange(
       .filter((line) =>
         /^\s*--.*\b(?:error|assert|warn)\s*\(/i.test(line)
       ).length;
-  if (
-    commentedDiagnostics(proposedSource) >
-      commentedDiagnostics(baseSource)
-  ) {
+  const baseCommentedDiagnostics = changes.reduce(
+    (total, change) => total + commentedDiagnostics(change.baseSource),
+    0,
+  );
+  const proposedCommentedDiagnostics = changes.reduce(
+    (total, change) => total + commentedDiagnostics(change.proposedSource),
+    0,
+  );
+  if (proposedCommentedDiagnostics > baseCommentedDiagnostics) {
     return "Trace rejected this change because it commented out an existing failure signal.";
   }
   return null;
+}
+
+export function validateRootCauseChange(
+  baseSource: string,
+  proposedSource: string,
+): string | null {
+  return validateRootCauseChanges([{ baseSource, proposedSource }]);
 }
 
 function patchFor(path: string, baseSource: string, proposedSource: string) {
@@ -690,6 +1007,7 @@ async function saveReadyProposal(
   proposal: AutofixProposal,
   result: z.infer<typeof modelResultSchema>,
   scripts: Map<string, PlaceScript>,
+  proposedSources: Map<string, string>,
   usage: { input: number; output: number },
 ): Promise<void> {
   const client = await pool.connect();
@@ -713,6 +1031,7 @@ async function saveReadyProposal(
     );
     for (const change of result.changes) {
       const script = scripts.get(change.path)!;
+      const proposedSource = proposedSources.get(change.path)!;
       await client.query(
         `INSERT INTO roblox_autofix_files (
            proposal_id, script_path, script_class, base_source_sha256,
@@ -724,8 +1043,8 @@ async function saveReadyProposal(
           script.className,
           sha256(script.source),
           script.source,
-          change.proposedSource,
-          JSON.stringify(patchFor(script.path, script.source, change.proposedSource)),
+          proposedSource,
+          JSON.stringify(patchFor(script.path, script.source, proposedSource)),
         ],
       );
     }
@@ -785,20 +1104,11 @@ async function processRun(
           proposal.normalized_stack,
           proposal.normalized_message,
         );
-      if (context.length === 0) {
-        await markUnable(
-          options.pool,
-          proposal.id,
-          target
-            ? "The source script is too large for a bounded, reliable autofix review."
-            : "Trace found no high-signal scripts after a bounded cross-script search.",
-        );
-        continue;
-      }
       const response = await requestFix(
         options,
         proposal,
         context,
+        scripts,
         MAX_RUN_INPUT_TOKENS - runInputTokens,
         MAX_RUN_OUTPUT_TOKENS - runOutputTokens,
       );
@@ -838,16 +1148,25 @@ async function processRun(
         continue;
       }
 
-      const byPath = new Map(context.map((script) => [script.path, script]));
+      const byPath = new Map(
+        response.context.map((script) => [script.path, script]),
+      );
       const uniquePaths = new Set(result.changes.map((change) => change.path));
+      const proposedSources = new Map<string, string>();
       const invalid = result.changes.find((change) => {
         const script = byPath.get(change.path);
+        const proposedSource = script
+          ? applyExactEdits(script.source, change.edits)
+          : null;
+        if (proposedSource) {
+          proposedSources.set(change.path, proposedSource);
+        }
         return (
           !script ||
-          change.proposedSource === script.source ||
-          change.proposedSource.includes("```") ||
-          change.proposedSource.includes("<<<<<<<") ||
-          change.proposedSource.includes(">>>>>>>")
+          !proposedSource ||
+          proposedSource.includes("```") ||
+          proposedSource.includes("<<<<<<<") ||
+          proposedSource.includes(">>>>>>>")
         );
       });
       if (invalid || uniquePaths.size !== result.changes.length) {
@@ -866,14 +1185,19 @@ async function processRun(
         );
         continue;
       }
-      const unsafeReason = result.changes
+      const safetyChanges = result.changes
         .map((change) => {
           const script = byPath.get(change.path);
-          return script
-            ? validateRootCauseChange(script.source, change.proposedSource)
+          const proposedSource = proposedSources.get(change.path);
+          return script && proposedSource
+            ? { baseSource: script.source, proposedSource }
             : null;
         })
-        .find((reason): reason is string => reason !== null);
+        .filter((change): change is {
+          baseSource: string;
+          proposedSource: string;
+        } => change !== null);
+      const unsafeReason = validateRootCauseChanges(safetyChanges);
       if (unsafeReason) {
         await markUnable(
           options.pool,
@@ -890,10 +1214,17 @@ async function processRun(
         );
         continue;
       }
-      await saveReadyProposal(options.pool, proposal, result, byPath, {
-        input: inputTokens,
-        output: outputTokens,
-      });
+      await saveReadyProposal(
+        options.pool,
+        proposal,
+        result,
+        byPath,
+        proposedSources,
+        {
+          input: inputTokens,
+          output: outputTokens,
+        },
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (
