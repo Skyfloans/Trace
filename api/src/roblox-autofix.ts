@@ -652,7 +652,6 @@ export async function requestFix(
             provider: { require_parameters: true },
             plugins: [{ id: "response-healing" }],
             reasoning: { effort: "medium", exclude: true },
-            temperature: 0,
             max_completion_tokens: Math.min(
               MAX_OUTPUT_TOKENS,
               remainingOutputTokens - totalOutputTokens,

@@ -452,6 +452,10 @@ test("autofix investigation requests related context then returns a multi-script
   assert.equal(requestBodies.length, 2);
   assert.deepEqual(requestBodies[0]?.plugins, [{ id: "response-healing" }]);
   assert.deepEqual(requestBodies[0]?.provider, { require_parameters: true });
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(requestBodies[0], "temperature"),
+    false,
+  );
   const secondMessages = requestBodies[1]?.messages as {
     content: string;
   }[];
