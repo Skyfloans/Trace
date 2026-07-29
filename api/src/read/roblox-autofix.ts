@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
-import { MAX_AUTOFIX_PROPOSALS } from "../roblox-autofix.js";
+import {
+  AUTOFIX_BUDGET_EXHAUSTED_REASON,
+  MAX_AUTOFIX_PROPOSALS,
+} from "../roblox-autofix.js";
 import { ReadApiError } from "./http.js";
 import { loadPluginSession } from "./roblox-plugin-auth.js";
 
@@ -388,11 +391,13 @@ export async function registerRobloxAutofixRoutes(
           );
         }
         const inbox = await client.query<{
+          failure_reason: string | null;
           id: string;
           run_id: string;
           status: string;
         }>(
-          `SELECT proposal.id, proposal.run_id, proposal.status
+          `SELECT proposal.id, proposal.run_id, proposal.status,
+                  proposal.failure_reason
            FROM roblox_autofix_proposals proposal
            WHERE proposal.project_id = $1
              AND proposal.status NOT IN ('accepted', 'rejected')
@@ -410,16 +415,22 @@ export async function registerRobloxAutofixRoutes(
            FOR UPDATE`,
           [session.project_id, MAX_AUTOFIX_PROPOSALS],
         );
-        const failed = inbox.rows.filter((proposal) =>
-          proposal.status === "failed"
+        const retryable = inbox.rows.filter((proposal) =>
+          proposal.status === "failed" ||
+          (
+            proposal.status === "unable" &&
+            proposal.failure_reason === AUTOFIX_BUDGET_EXHAUSTED_REASON
+          )
         );
-        if (failed.length === 0) {
+        if (retryable.length === 0) {
           await client.query("COMMIT");
           noStore(reply);
           return { queued: 0, status: "unchanged" };
         }
-        const proposalIds = failed.map((proposal) => proposal.id);
-        const runIds = [...new Set(failed.map((proposal) => proposal.run_id))];
+        const proposalIds = retryable.map((proposal) => proposal.id);
+        const runIds = [...new Set(
+          retryable.map((proposal) => proposal.run_id),
+        )];
         await client.query(
           "DELETE FROM roblox_autofix_files WHERE proposal_id = ANY($1::uuid[])",
           [proposalIds],
@@ -443,13 +454,15 @@ export async function registerRobloxAutofixRoutes(
            SET status = 'queued',
                started_at = NULL,
                finished_at = NULL,
-               last_error = NULL
+               last_error = NULL,
+               input_tokens = 0,
+               output_tokens = 0
            WHERE id = ANY($1::uuid[])`,
           [runIds],
         );
         await client.query("COMMIT");
         noStore(reply);
-        return { queued: failed.length, status: "queued" };
+        return { queued: retryable.length, status: "queued" };
       } catch (error) {
         await client.query("ROLLBACK");
         throw error;
@@ -546,8 +559,11 @@ export async function registerRobloxAutofixRoutes(
           await client.query(
             `UPDATE roblox_autofix_runs
              SET status = 'queued',
+                 started_at = NULL,
                  finished_at = NULL,
-                 last_error = NULL
+                 last_error = NULL,
+                 input_tokens = 0,
+                 output_tokens = 0
              WHERE id = $1`,
             [current.run_id],
           );

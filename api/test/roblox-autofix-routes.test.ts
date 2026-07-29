@@ -245,6 +245,8 @@ test("ready and failed proposals can be regenerated in their existing queue slot
       sql.includes("UPDATE roblox_autofix_runs") &&
       sql.includes("SET status = 'queued'")
     ) {
+      assert.match(sql, /input_tokens = 0/);
+      assert.match(sql, /output_tokens = 0/);
       runReset = true;
       return { rows: [], rowCount: 1 };
     }
@@ -296,12 +298,12 @@ test("ready and failed proposals can be regenerated in their existing queue slot
   await app.close();
 });
 
-test("bulk retry requeues every failed request in the current inbox", async () => {
-  const failedIds = [
+test("bulk retry requeues failed and budget-blocked requests in the current inbox", async () => {
+  const retryableIds = [
     "60000000-0000-4000-8000-000000000002",
     "60000000-0000-4000-8000-000000000003",
   ];
-  const failedRunIds = [
+  const retryableRunIds = [
     "50000000-0000-4000-8000-000000000002",
     "50000000-0000-4000-8000-000000000003",
   ];
@@ -331,15 +333,37 @@ test("bulk retry requeues every failed request in the current inbox", async () =
       assert.deepEqual(values, [projectId, 15]);
       return {
         rows: [
-          { id: "60000000-0000-4000-8000-000000000001", run_id: runId, status: "ready" },
-          { id: failedIds[0], run_id: failedRunIds[0], status: "failed" },
-          { id: failedIds[1], run_id: failedRunIds[1], status: "failed" },
+          {
+            failure_reason: null,
+            id: "60000000-0000-4000-8000-000000000001",
+            run_id: runId,
+            status: "ready",
+          },
+          {
+            failure_reason: "OpenRouter failed",
+            id: retryableIds[0],
+            run_id: retryableRunIds[0],
+            status: "failed",
+          },
+          {
+            failure_reason:
+              "The batch reached Trace's strict token budget before this fix could be requested.",
+            id: retryableIds[1],
+            run_id: retryableRunIds[1],
+            status: "unable",
+          },
+          {
+            failure_reason: "Not enough source evidence",
+            id: "60000000-0000-4000-8000-000000000004",
+            run_id: "50000000-0000-4000-8000-000000000004",
+            status: "unable",
+          },
         ],
-        rowCount: 3,
+        rowCount: 4,
       };
     }
     if (sql.includes("DELETE FROM roblox_autofix_files")) {
-      assert.deepEqual(values, [failedIds]);
+      assert.deepEqual(values, [retryableIds]);
       return { rows: [], rowCount: 0 };
     }
     if (
@@ -353,6 +377,8 @@ test("bulk retry requeues every failed request in the current inbox", async () =
       sql.includes("UPDATE roblox_autofix_runs") &&
       sql.includes("WHERE id = ANY")
     ) {
+      assert.match(sql, /input_tokens = 0/);
+      assert.match(sql, /output_tokens = 0/);
       resetRunIds = values[0];
       return { rows: [], rowCount: 2 };
     }
@@ -380,7 +406,7 @@ test("bulk retry requeues every failed request in the current inbox", async () =
 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json(), { queued: 2, status: "queued" });
-  assert.deepEqual(resetProposalIds, failedIds);
-  assert.deepEqual(resetRunIds, failedRunIds);
+  assert.deepEqual(resetProposalIds, retryableIds);
+  assert.deepEqual(resetRunIds, retryableRunIds);
   await app.close();
 });

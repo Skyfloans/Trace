@@ -16,6 +16,8 @@ const AUTOFIX_SYSTEM_PROMPT = readFileSync(
 );
 
 export const MAX_AUTOFIX_PROPOSALS = 15;
+export const AUTOFIX_BUDGET_EXHAUSTED_REASON =
+  "The batch reached Trace's strict token budget before this fix could be requested.";
 export const AUTOFIX_SCHEDULE_INTERVAL_MS = 10 * 60 * 1_000;
 export const AUTOFIX_PROCESSING_LEASE_MS = 2 * 60 * 1_000;
 const AUTOFIX_RECOVERY_INTERVAL_MS = 60 * 1_000;
@@ -1233,7 +1235,7 @@ async function processRun(
         await markUnable(
           options.pool,
           proposal.id,
-          "The batch reached Trace's strict token budget before this fix could be requested.",
+          AUTOFIX_BUDGET_EXHAUSTED_REASON,
         );
         continue;
       }
