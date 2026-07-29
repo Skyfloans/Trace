@@ -322,91 +322,102 @@ local function reviewStatusText(status: string): string
 	return status
 end
 
-local function createProposalCard(
+local function compactLine(value: string): string
+	local firstLine = string.match(value, "[^\r\n]+") or value
+	local collapsed = string.gsub(firstLine, "%s+", " ")
+	return string.match(collapsed, "^%s*(.-)%s*$") or collapsed
+end
+
+local function proposalMetadata(proposal: ProposalSummary): string
+	local parts = {
+		reviewStatusText(proposal.status),
+		string.upper(proposal.category) .. " priority",
+		proposal.sourceScript or "Unknown script",
+		string.format("%d event%s", proposal.eventCount, if proposal.eventCount == 1 then "" else "s"),
+	}
+	if proposal.fileCount > 0 then
+		table.insert(parts, string.format("%d file%s", proposal.fileCount, if proposal.fileCount == 1 then "" else "s"))
+	end
+	return table.concat(parts, "  ·  ")
+end
+
+local function createProposalRow(
 	parent: Instance,
 	palette: Palette,
 	proposal: ProposalSummary,
 	order: number,
+	showDivider: boolean,
 	onOpen: (string) -> ()
 )
-	local card = Instance.new("TextButton")
-	card.Name = "FixRequest"
-	card.AutoButtonColor = false
-	card.BackgroundColor3 = palette.raised
-	card.LayoutOrder = order
-	card.Size = UDim2.new(1, 0, 0, 106)
-	card.Text = ""
-	addCorner(card, 8)
-	addStroke(card, palette.border)
-	card.Parent = parent
+	local row = Instance.new("TextButton")
+	row.Name = "FixRequest"
+	row.AutoButtonColor = false
+	row.BackgroundColor3 = palette.buttonHover
+	row.BackgroundTransparency = 1
+	row.BorderSizePixel = 0
+	row.LayoutOrder = order
+	row.Size = UDim2.new(1, 0, 0, 64)
+	row.Text = ""
+	row.Parent = parent
 
-	local category = createPill(card, proposal.category, categoryColor(palette, proposal.category), 0)
-	category.Position = UDim2.fromOffset(11, 10)
-
-	local status = Instance.new("TextLabel")
-	status.BackgroundTransparency = 1
-	status.Font = FONT
-	status.Position = UDim2.new(0.45, 0, 0, 10)
-	status.Size = UDim2.new(0.55, -12, 0, 20)
-	status.Text = reviewStatusText(proposal.status)
-	status.TextColor3 = if proposal.status == "ready" then palette.success else palette.muted
-	status.TextSize = 10
-	status.TextXAlignment = Enum.TextXAlignment.Right
-	status.Parent = card
+	local severity = Instance.new("Frame")
+	severity.BackgroundColor3 = categoryColor(palette, proposal.category)
+	severity.BorderSizePixel = 0
+	severity.Position = UDim2.fromOffset(12, 16)
+	severity.Size = UDim2.fromOffset(8, 8)
+	addCorner(severity, 4)
+	severity.Parent = row
 
 	local title = Instance.new("TextLabel")
 	title.BackgroundTransparency = 1
+	title.ClipsDescendants = true
 	title.Font = FONT_MEDIUM
-	title.Position = UDim2.fromOffset(11, 38)
-	title.Size = UDim2.new(1, -30, 0, 22)
-	title.Text = proposal.title or proposal.message
+	title.Position = UDim2.fromOffset(28, 8)
+	title.Size = UDim2.new(1, -56, 0, 20)
+	title.Text = compactLine(proposal.title or proposal.message)
 	title.TextColor3 = palette.text
 	title.TextSize = 13
 	title.TextTruncate = Enum.TextTruncate.AtEnd
+	title.TextWrapped = false
 	title.TextXAlignment = Enum.TextXAlignment.Left
-	title.Parent = card
+	title.Parent = row
 
 	local meta = Instance.new("TextLabel")
 	meta.BackgroundTransparency = 1
+	meta.ClipsDescendants = true
 	meta.Font = FONT
-	meta.Position = UDim2.fromOffset(11, 65)
-	meta.Size = UDim2.new(1, -32, 0, 30)
-	if proposal.fileCount > 0 then
-		meta.Text = string.format(
-			"%s  ·  %d event%s  ·  %d file%s",
-			proposal.sourceScript or "Unknown script",
-			proposal.eventCount,
-			if proposal.eventCount == 1 then "" else "s",
-			proposal.fileCount,
-			if proposal.fileCount == 1 then "" else "s"
-		)
-	else
-		meta.Text = string.format(
-			"%s  ·  %d event%s  ·  No change prepared",
-			proposal.sourceScript or "Unknown script",
-			proposal.eventCount,
-			if proposal.eventCount == 1 then "" else "s"
-		)
-	end
+	meta.Position = UDim2.fromOffset(28, 32)
+	meta.Size = UDim2.new(1, -56, 0, 16)
+	meta.Text = proposalMetadata(proposal)
 	meta.TextColor3 = palette.muted
 	meta.TextSize = 10
 	meta.TextTruncate = Enum.TextTruncate.AtEnd
+	meta.TextWrapped = false
 	meta.TextXAlignment = Enum.TextXAlignment.Left
-	meta.Parent = card
+	meta.Parent = row
 
 	local arrow = Instance.new("TextLabel")
 	arrow.BackgroundTransparency = 1
 	arrow.Font = FONT_MEDIUM
-	arrow.Position = UDim2.new(1, -23, 0, 40)
-	arrow.Size = UDim2.fromOffset(12, 22)
+	arrow.Position = UDim2.new(1, -24, 0, 20)
+	arrow.Size = UDim2.fromOffset(12, 24)
 	arrow.Text = "›"
 	arrow.TextColor3 = palette.muted
 	arrow.TextSize = 18
-	arrow.Parent = card
+	arrow.Parent = row
 
-	card.MouseEnter:Connect(function() card.BackgroundColor3 = palette.buttonHover end)
-	card.MouseLeave:Connect(function() card.BackgroundColor3 = palette.raised end)
-	card.MouseButton1Click:Connect(function() onOpen(proposal.id) end)
+	if showDivider then
+		local divider = Instance.new("Frame")
+		divider.BackgroundColor3 = palette.border
+		divider.BorderSizePixel = 0
+		divider.Position = UDim2.new(0, 12, 1, -1)
+		divider.Size = UDim2.new(1, -12, 0, 1)
+		divider.Parent = row
+	end
+
+	row.MouseEnter:Connect(function() row.BackgroundTransparency = 0 end)
+	row.MouseLeave:Connect(function() row.BackgroundTransparency = 1 end)
+	row.MouseButton1Click:Connect(function() onOpen(proposal.id) end)
 end
 
 local function createDiff(parent: Instance, palette: Palette, file: Api.ProposalFile, order: number)
@@ -530,12 +541,12 @@ function Widget.new(plugin: Plugin, callbacks: Callbacks, logoImage: string)
 	content.Name = "Layout"
 	content.AutomaticSize = Enum.AutomaticSize.Y
 	content.BackgroundTransparency = 1
-	content.Position = UDim2.fromOffset(14, 14)
-	content.Size = UDim2.new(1, -28, 0, 0)
+	content.Position = UDim2.fromOffset(12, 12)
+	content.Size = UDim2.new(1, -24, 0, 0)
 	content.Parent = scrolling
 
 	local list = Instance.new("UIListLayout")
-	list.Padding = UDim.new(0, 9)
+	list.Padding = UDim.new(0, 8)
 	list.SortOrder = Enum.SortOrder.LayoutOrder
 	list.Parent = content
 
@@ -678,11 +689,11 @@ end
 
 function Widget:_renderReviews(palette: Palette)
 	local connected = Instance.new("Frame")
-	connected.BackgroundColor3 = palette.success:Lerp(palette.main, 0.86)
+	connected.BackgroundColor3 = palette.raised
 	connected.LayoutOrder = 10
-	connected.Size = UDim2.new(1, 0, 0, 38)
+	connected.Size = UDim2.new(1, 0, 0, 32)
 	addCorner(connected, 7)
-	addStroke(connected, palette.success:Lerp(palette.main, 0.58))
+	addStroke(connected, palette.success:Lerp(palette.main, 0.68))
 	connected.Parent = self.content
 
 	local connectedText = Instance.new("TextLabel")
@@ -701,7 +712,7 @@ function Widget:_renderReviews(palette: Palette)
 	disconnect.BackgroundTransparency = 1
 	disconnect.Font = FONT_MEDIUM
 	disconnect.Position = UDim2.new(1, -86, 0, 0)
-	disconnect.Size = UDim2.fromOffset(76, 38)
+	disconnect.Size = UDim2.fromOffset(76, 32)
 	disconnect.Text = "Disconnect"
 	disconnect.TextColor3 = palette.muted
 	disconnect.TextSize = 10
@@ -763,13 +774,17 @@ function Widget:_renderReviews(palette: Palette)
 			30
 		)
 	else
-		createMessage(
+		local watching = createLabel(
 			self.content,
-			palette,
 			"Trace checks priority bugs automatically every 10 minutes and keeps at most 15 unresolved requests.",
-			"info",
+			10,
+			palette.muted,
+			FONT,
 			30
 		)
+		watching.Size = UDim2.new(1, 0, 0, 16)
+		watching.TextTruncate = Enum.TextTruncate.AtEnd
+		watching.TextWrapped = false
 	end
 
 	if #reviews.proposals == 0 then
@@ -796,9 +811,32 @@ function Widget:_renderReviews(palette: Palette)
 		return
 	end
 
-	for index, proposal in reviews.proposals do
-		if index > MAX_VISIBLE_PROPOSALS then break end
-		createProposalCard(self.content, palette, proposal, 50 + index, self.callbacks.onOpenProposal)
+	local requestCount = math.min(#reviews.proposals, MAX_VISIBLE_PROPOSALS)
+	local requestList = Instance.new("Frame")
+	requestList.Name = "FixRequestList"
+	requestList.AutomaticSize = Enum.AutomaticSize.Y
+	requestList.BackgroundColor3 = palette.raised
+	requestList.ClipsDescendants = true
+	requestList.LayoutOrder = 50
+	requestList.Size = UDim2.new(1, 0, 0, 0)
+	addCorner(requestList, 8)
+	addStroke(requestList, palette.border)
+	requestList.Parent = self.content
+
+	local requestLayout = Instance.new("UIListLayout")
+	requestLayout.Padding = UDim.new()
+	requestLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	requestLayout.Parent = requestList
+
+	for index = 1, requestCount do
+		createProposalRow(
+			requestList,
+			palette,
+			reviews.proposals[index],
+			index,
+			index < requestCount,
+			self.callbacks.onOpenProposal
+		)
 	end
 end
 

@@ -62,8 +62,10 @@ Connecting goes directly to the fix-request queue. The server checks the
 priority list every ten minutes and keeps no more than 15 unresolved requests
 for the project, ordered most critical first. Both the API and plugin cap the
 visible inbox at those 15 current requests, so older diagnostics never flood
-Studio. The plugin refreshes the inbox automatically. Each ready request opens
-a dark unified diff with old/new line numbers. Requests without a concrete
+Studio. The compact inbox uses pull-request-style rows with a single-line title,
+status and impact metadata, severity color, and consistent truncation at narrow
+widget widths. The plugin refreshes the inbox automatically. Each ready request
+opens a dark unified diff with old/new line numbers. Requests without a concrete
 script edit are shown as diagnostics instead of empty code reviews; they can be
 retried with the bounded cross-script investigation or dismissed. Reviewable
 proposals can also be regenerated when the displayed diff addresses a symptom
