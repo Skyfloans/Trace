@@ -192,9 +192,11 @@ test("plugin autofix does not queue work when OpenRouter or storage is absent", 
   await app.close();
 });
 
-test("a reviewable proposal can be regenerated in its existing queue slot", async () => {
+test("ready and failed proposals can be regenerated in their existing queue slots", async () => {
   let proposalReset = false;
   let runReset = false;
+  let currentStatus = "ready";
+  let outstandingCount = 15;
   const query = async (sql: string) => {
     if (sql.includes("UPDATE roblox_plugin_credentials credentials")) {
       return { rows: [pluginSession()], rowCount: 1 };
@@ -212,7 +214,7 @@ test("a reviewable proposal can be regenerated in its existing queue slot", asyn
       sql.includes("FROM roblox_autofix_proposals")
     ) {
       return {
-        rows: [{ run_id: runId, status: "ready" }],
+        rows: [{ run_id: runId, status: currentStatus }],
         rowCount: 1,
       };
     }
@@ -227,7 +229,7 @@ test("a reviewable proposal can be regenerated in its existing queue slot", asyn
       sql.includes("FROM roblox_autofix_proposals")
     ) {
       assert.match(sql, /'queued', 'processing', 'ready', 'conflict'/);
-      return { rows: [{ count: 15 }], rowCount: 1 };
+      return { rows: [{ count: outstandingCount }], rowCount: 1 };
     }
     if (sql.includes("DELETE FROM roblox_autofix_files")) {
       return { rows: [], rowCount: 0 };
@@ -274,5 +276,111 @@ test("a reviewable proposal can be regenerated in its existing queue slot", asyn
   assert.equal(response.json().status, "queued");
   assert.equal(proposalReset, true);
   assert.equal(runReset, true);
+
+  currentStatus = "failed";
+  outstandingCount = 14;
+  proposalReset = false;
+  runReset = false;
+  const failedResponse = await app.inject({
+    method: "POST",
+    url:
+      "/v1/plugin-autofix/proposals/60000000-0000-4000-8000-000000000001/review",
+    headers: { authorization: `Bearer ${"t".repeat(43)}` },
+    payload: { action: "retry" },
+  });
+
+  assert.equal(failedResponse.statusCode, 200);
+  assert.equal(failedResponse.json().status, "queued");
+  assert.equal(proposalReset, true);
+  assert.equal(runReset, true);
+  await app.close();
+});
+
+test("bulk retry requeues every failed request in the current inbox", async () => {
+  const failedIds = [
+    "60000000-0000-4000-8000-000000000002",
+    "60000000-0000-4000-8000-000000000003",
+  ];
+  const failedRunIds = [
+    "50000000-0000-4000-8000-000000000002",
+    "50000000-0000-4000-8000-000000000003",
+  ];
+  let resetProposalIds: unknown;
+  let resetRunIds: unknown;
+  const query = async (sql: string, values: unknown[] = []) => {
+    if (sql.includes("UPDATE roblox_plugin_credentials credentials")) {
+      return { rows: [pluginSession()], rowCount: 1 };
+    }
+    if (
+      sql === "BEGIN" ||
+      sql === "COMMIT" ||
+      sql === "ROLLBACK" ||
+      sql.includes("pg_advisory_xact_lock")
+    ) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("FROM roblox_autofix_runs") &&
+      sql.includes("status IN ('queued', 'processing')")
+    ) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("SELECT proposal.id, proposal.run_id, proposal.status")
+    ) {
+      assert.deepEqual(values, [projectId, 15]);
+      return {
+        rows: [
+          { id: "60000000-0000-4000-8000-000000000001", run_id: runId, status: "ready" },
+          { id: failedIds[0], run_id: failedRunIds[0], status: "failed" },
+          { id: failedIds[1], run_id: failedRunIds[1], status: "failed" },
+        ],
+        rowCount: 3,
+      };
+    }
+    if (sql.includes("DELETE FROM roblox_autofix_files")) {
+      assert.deepEqual(values, [failedIds]);
+      return { rows: [], rowCount: 0 };
+    }
+    if (
+      sql.includes("UPDATE roblox_autofix_proposals") &&
+      sql.includes("WHERE id = ANY")
+    ) {
+      resetProposalIds = values[0];
+      return { rows: [], rowCount: 2 };
+    }
+    if (
+      sql.includes("UPDATE roblox_autofix_runs") &&
+      sql.includes("WHERE id = ANY")
+    ) {
+      resetRunIds = values[0];
+      return { rows: [], rowCount: 2 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const client = { query, release: () => undefined } as unknown as PoolClient;
+  const pool = {
+    query,
+    connect: async () => client,
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "https://tracestack.gg",
+    null,
+    pool,
+    null,
+    { available: true, model: "openai/gpt-5.4-nano" },
+  );
+
+  const response = await app.inject({
+    method: "POST",
+    url: "/v1/plugin-autofix/retry-failed",
+    headers: { authorization: `Bearer ${"t".repeat(43)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json(), { queued: 2, status: "queued" });
+  assert.deepEqual(resetProposalIds, failedIds);
+  assert.deepEqual(resetRunIds, failedRunIds);
   await app.close();
 });

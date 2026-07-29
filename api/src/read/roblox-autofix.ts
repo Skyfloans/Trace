@@ -363,6 +363,103 @@ export async function registerRobloxAutofixRoutes(
   );
 
   app.post(
+    "/v1/plugin-autofix/retry-failed",
+    async (request, reply) => {
+      const session = await loadPluginSession(pool, request);
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await client.query(
+          "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+          [`roblox-autofix:${session.project_id}`],
+        );
+        const active = await client.query(
+          `SELECT id
+           FROM roblox_autofix_runs
+           WHERE project_id = $1 AND status IN ('queued', 'processing')
+           LIMIT 1`,
+          [session.project_id],
+        );
+        if (active.rows[0]) {
+          throw new ReadApiError(
+            409,
+            "autofix_retry_busy",
+            "Trace is already preparing requests. Retry the failed inbox after it finishes.",
+          );
+        }
+        const inbox = await client.query<{
+          id: string;
+          run_id: string;
+          status: string;
+        }>(
+          `SELECT proposal.id, proposal.run_id, proposal.status
+           FROM roblox_autofix_proposals proposal
+           WHERE proposal.project_id = $1
+             AND proposal.status NOT IN ('accepted', 'rejected')
+           ORDER BY
+             CASE proposal.status
+               WHEN 'ready' THEN 0
+               WHEN 'conflict' THEN 1
+               WHEN 'processing' THEN 2
+               WHEN 'queued' THEN 3
+               ELSE 4
+             END,
+             proposal.created_at DESC,
+             proposal.priority_rank
+           LIMIT $2
+           FOR UPDATE`,
+          [session.project_id, MAX_AUTOFIX_PROPOSALS],
+        );
+        const failed = inbox.rows.filter((proposal) =>
+          proposal.status === "failed"
+        );
+        if (failed.length === 0) {
+          await client.query("COMMIT");
+          noStore(reply);
+          return { queued: 0, status: "unchanged" };
+        }
+        const proposalIds = failed.map((proposal) => proposal.id);
+        const runIds = [...new Set(failed.map((proposal) => proposal.run_id))];
+        await client.query(
+          "DELETE FROM roblox_autofix_files WHERE proposal_id = ANY($1::uuid[])",
+          [proposalIds],
+        );
+        await client.query(
+          `UPDATE roblox_autofix_proposals
+           SET status = 'queued',
+               title = NULL,
+               summary = NULL,
+               confidence = NULL,
+               risk = NULL,
+               failure_reason = NULL,
+               reviewed_by_credential_id = NULL,
+               reviewed_at = NULL,
+               updated_at = now()
+           WHERE id = ANY($1::uuid[])`,
+          [proposalIds],
+        );
+        await client.query(
+          `UPDATE roblox_autofix_runs
+           SET status = 'queued',
+               started_at = NULL,
+               finished_at = NULL,
+               last_error = NULL
+           WHERE id = ANY($1::uuid[])`,
+          [runIds],
+        );
+        await client.query("COMMIT");
+        noStore(reply);
+        return { queued: failed.length, status: "queued" };
+      } catch (error) {
+        await client.query("ROLLBACK");
+        throw error;
+      } finally {
+        client.release();
+      }
+    },
+  );
+
+  app.post(
     "/v1/plugin-autofix/proposals/:proposalId/review",
     async (request, reply) => {
       const session = await loadPluginSession(pool, request);
