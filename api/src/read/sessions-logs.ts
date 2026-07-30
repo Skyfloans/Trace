@@ -71,37 +71,16 @@ async function readRecentPlayers(
   projectId: string,
   limit: number,
 ): Promise<Record<string, unknown>[]> {
-  const players = new Map<string, Record<string, unknown>>();
-  const batchSize = Math.max(250, limit * 5);
-  let cursorTime: unknown = null;
-  let cursorId: unknown = null;
-
-  while (players.size < limit) {
-    const result = await pool.query(
-      `SELECT
-         s.id, s.player_id, s.player_name, s.player_display_name,
-         s.avatar_url, s.started_at, s.last_seen_at
-       FROM sessions s
-       WHERE s.project_id = $1
-         AND ($2::timestamptz IS NULL OR (s.started_at, s.id) < ($2, $3::uuid))
-       ORDER BY s.started_at DESC, s.id DESC
-       LIMIT $4`,
-      [projectId, cursorTime, cursorId, batchSize],
-    );
-
-    for (const row of result.rows) {
-      const playerId = String(row.player_id);
-      if (!players.has(playerId)) players.set(playerId, row);
-      if (players.size >= limit) break;
-    }
-
-    const last = result.rows.at(-1);
-    if (!last || result.rows.length < batchSize) break;
-    cursorTime = last.started_at;
-    cursorId = last.id;
-  }
-
-  return [...players.values()];
+  const result = await pool.query(
+    `SELECT
+       p.player_id, p.player_name, p.player_display_name, p.avatar_url
+     FROM project_players p
+     WHERE p.project_id = $1
+     ORDER BY p.last_seen_at DESC, p.player_id DESC
+     LIMIT $2`,
+    [projectId, limit],
+  );
+  return result.rows;
 }
 
 function readEventFilters(query: Record<string, unknown>) {
@@ -268,24 +247,36 @@ export async function registerSessionAndLogRoutes(
 
       const rows = search
         ? (await pool.query(
-          `WITH ranked AS (
-           SELECT DISTINCT ON (s.player_id)
-             s.player_id, s.player_name, s.player_display_name, s.avatar_url,
+          `WITH matches AS (
+           SELECT
+             p.player_id, p.player_name, p.player_display_name, p.avatar_url,
+             0 AS rank
+           FROM project_players p
+           WHERE p.project_id = $1
+             AND $2::bigint IS NOT NULL
+             AND p.player_id = $2::bigint
+           UNION ALL
+           SELECT
+             p.player_id, p.player_name, p.player_display_name, p.avatar_url,
+             CASE WHEN lower(p.player_name) = $3::text THEN 1 ELSE 2 END AS rank
+           FROM project_players p
+           WHERE p.project_id = $1
+             AND lower(p.player_name) LIKE $3::text || '%'
+           UNION ALL
+           SELECT
+             p.player_id, p.player_name, p.player_display_name, p.avatar_url,
              CASE
-               WHEN $2::bigint IS NOT NULL AND s.player_id = $2::bigint THEN 0
-               WHEN lower(s.player_name) = $3::text THEN 1
-               WHEN lower(s.player_name) LIKE $3::text || '%' THEN 2
-               WHEN lower(s.player_display_name) = $3::text THEN 3
+               WHEN lower(p.player_display_name) = $3::text THEN 3
                ELSE 4
              END AS rank
-           FROM sessions s
-           WHERE s.project_id = $1
-             AND (
-               ($2::bigint IS NOT NULL AND s.player_id = $2::bigint)
-               OR lower(s.player_name) LIKE $3::text || '%'
-               OR lower(s.player_display_name) LIKE $3::text || '%'
-             )
-           ORDER BY s.player_id, rank, s.started_at DESC
+           FROM project_players p
+           WHERE p.project_id = $1
+             AND lower(p.player_display_name) LIKE $3::text || '%'
+         ),
+         ranked AS (
+           SELECT DISTINCT ON (player_id) *
+           FROM matches
+           ORDER BY player_id, rank
          )
          SELECT *
          FROM ranked

@@ -775,7 +775,7 @@ test("recent session timelines skip archive storage", async () => {
   await app.close();
 });
 
-test("recent players scan newest sessions and stop after filling the page", async () => {
+test("recent players read the compact project player directory", async () => {
   let playersSql = "";
   const pool = {
     query: async (sql: string) => {
@@ -792,39 +792,24 @@ test("recent players scan newest sessions and stop after filling the page", asyn
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
-      if (sql.includes("ORDER BY s.started_at DESC, s.id DESC")) {
+      if (sql.includes("FROM project_players p")) {
         playersSql = sql;
         return {
           rows: [
             {
-              id: "30000000-0000-4000-8000-000000000001",
               player_id: "123",
               player_name: "LatestPlayer",
               player_display_name: "Latest Player",
               avatar_url: null,
-              started_at: "2026-07-20T12:00:00.000Z",
-              last_seen_at: "2026-07-20T12:10:00.000Z",
             },
             {
-              id: "30000000-0000-4000-8000-000000000002",
-              player_id: "123",
-              player_name: "OlderPlayerName",
-              player_display_name: "Older Player Name",
-              avatar_url: null,
-              started_at: "2026-07-20T11:00:00.000Z",
-              last_seen_at: "2026-07-20T11:10:00.000Z",
-            },
-            {
-              id: "30000000-0000-4000-8000-000000000003",
               player_id: "456",
               player_name: "SecondPlayer",
               player_display_name: "Second Player",
               avatar_url: null,
-              started_at: "2026-07-20T10:00:00.000Z",
-              last_seen_at: "2026-07-20T10:10:00.000Z",
             },
           ],
-          rowCount: 3,
+          rowCount: 2,
         };
       }
       throw new Error(`Unexpected query: ${sql}`);
@@ -839,10 +824,10 @@ test("recent players scan newest sessions and stop after filling the page", asyn
   });
 
   assert.equal(response.statusCode, 200);
-  assert.match(playersSql, /WHERE s\.project_id = \$1/);
-  assert.match(playersSql, /\(s\.started_at, s\.id\) < \(\$2, \$3::uuid\)/);
-  assert.match(playersSql, /ORDER BY s\.started_at DESC, s\.id DESC/);
-  assert.doesNotMatch(playersSql, /DISTINCT ON/);
+  assert.match(playersSql, /FROM project_players p/);
+  assert.match(playersSql, /WHERE p\.project_id = \$1/);
+  assert.match(playersSql, /ORDER BY p\.last_seen_at DESC, p\.player_id DESC/);
+  assert.doesNotMatch(playersSql, /FROM sessions/);
   assert.deepEqual(
     response.json().data.map((player: { username: string }) => player.username),
     ["LatestPlayer", "SecondPlayer"],
@@ -867,7 +852,7 @@ test("player search keeps username, display name, and numeric ID filters indexab
       if (sql.includes("FROM project_memberships")) {
         return { rows: [{ exists: 1 }], rowCount: 1 };
       }
-      if (sql.includes("WITH ranked AS")) {
+      if (sql.includes("FROM project_players p")) {
         searches.push({ sql, values: values ?? [] });
         return {
           rows: [{
@@ -909,11 +894,11 @@ test("player search keeps username, display name, and numeric ID filters indexab
   assert.deepEqual(searches[0].values, [project, null, "sky", 50]);
   assert.deepEqual(searches[1].values, [project, "123", "123", 50]);
   assert.deepEqual(searches[2].values, [project, null, "99999999999999999999", 50]);
-  assert.match(searches[0].sql, /s\.player_id = \$2::bigint/);
-  assert.match(searches[0].sql, /lower\(s\.player_name\) LIKE \$3::text \|\| '%'/);
-  assert.match(searches[0].sql, /lower\(s\.player_display_name\) LIKE \$3::text \|\| '%'/);
-  assert.doesNotMatch(searches[0].sql, /s\.player_id::text/);
-  assert.doesNotMatch(searches[0].sql, /COALESCE\(s\.player_display_name/);
+  assert.match(searches[0].sql, /p\.player_id = \$2::bigint/);
+  assert.match(searches[0].sql, /lower\(p\.player_name\) LIKE \$3::text \|\| '%'/);
+  assert.match(searches[0].sql, /lower\(p\.player_display_name\) LIKE \$3::text \|\| '%'/);
+  assert.match(searches[0].sql, /UNION ALL/);
+  assert.doesNotMatch(searches[0].sql, /FROM sessions/);
   await app.close();
 });
 

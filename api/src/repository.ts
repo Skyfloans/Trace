@@ -247,8 +247,37 @@ async function upsertSessions(
          OR sessions.ended_at IS DISTINCT FROM COALESCE(EXCLUDED.ended_at, sessions.ended_at)
          OR sessions.last_seen_at < EXCLUDED.last_seen_at
          OR sessions.end_reason IS DISTINCT FROM COALESCE(EXCLUDED.end_reason, sessions.end_reason)
-       )
+     )
      RETURNING id
+     ),
+     directory_upsert AS (
+       INSERT INTO project_players (
+         project_id, player_id, player_name, player_display_name, last_seen_at
+       )
+       SELECT DISTINCT ON (input.player_id)
+         $1, input.player_id, input.player_name,
+         input.player_display_name, input.last_seen_at
+       FROM input
+       ORDER BY input.player_id, input.last_seen_at DESC
+       ON CONFLICT (project_id, player_id) DO UPDATE
+       SET player_name = CASE
+             WHEN EXCLUDED.last_seen_at >= project_players.last_seen_at
+             THEN COALESCE(EXCLUDED.player_name, project_players.player_name)
+             ELSE project_players.player_name
+           END,
+           player_display_name = CASE
+             WHEN EXCLUDED.last_seen_at >= project_players.last_seen_at
+             THEN COALESCE(
+               EXCLUDED.player_display_name,
+               project_players.player_display_name
+             )
+             ELSE project_players.player_display_name
+           END,
+           last_seen_at = GREATEST(
+             EXCLUDED.last_seen_at,
+             project_players.last_seen_at
+           )
+       RETURNING player_id
      )
      SELECT COUNT(*) FILTER (
        WHERE upserted.id IS NOT NULL OR existing.id IS NOT NULL
