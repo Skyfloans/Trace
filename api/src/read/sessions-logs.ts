@@ -259,7 +259,12 @@ export async function registerSessionAndLogRoutes(
         .default("")
         .parse(query.query);
       const limit = clampLimit(query.limit as string | undefined, 20, 50);
-      const numeric = search.length > 0 && /^\d+$/.test(search);
+      const numericId = search.length > 0
+        && /^\d+$/.test(search)
+        && BigInt(search) <= 9_223_372_036_854_775_807n
+        ? search
+        : null;
+      const normalizedSearch = search.toLowerCase();
 
       const rows = search
         ? (await pool.query(
@@ -267,18 +272,18 @@ export async function registerSessionAndLogRoutes(
            SELECT DISTINCT ON (s.player_id)
              s.player_id, s.player_name, s.player_display_name, s.avatar_url,
              CASE
-               WHEN $2::boolean AND s.player_id::text = $3::text THEN 0
-               WHEN lower(s.player_name) = lower($3::text) THEN 1
-               WHEN lower(s.player_name) LIKE lower($3::text) || '%' THEN 2
-               WHEN lower(s.player_display_name) = lower($3::text) THEN 3
+               WHEN $2::bigint IS NOT NULL AND s.player_id = $2::bigint THEN 0
+               WHEN lower(s.player_name) = $3::text THEN 1
+               WHEN lower(s.player_name) LIKE $3::text || '%' THEN 2
+               WHEN lower(s.player_display_name) = $3::text THEN 3
                ELSE 4
              END AS rank
            FROM sessions s
            WHERE s.project_id = $1
              AND (
-               ($2::boolean AND s.player_id::text = $3::text)
-               OR lower(s.player_name) LIKE lower($3::text) || '%'
-               OR lower(COALESCE(s.player_display_name, '')) LIKE lower($3::text) || '%'
+               ($2::bigint IS NOT NULL AND s.player_id = $2::bigint)
+               OR lower(s.player_name) LIKE $3::text || '%'
+               OR lower(s.player_display_name) LIKE $3::text || '%'
              )
            ORDER BY s.player_id, rank, s.started_at DESC
          )
@@ -286,7 +291,7 @@ export async function registerSessionAndLogRoutes(
          FROM ranked
          ORDER BY rank, lower(player_name), player_id
          LIMIT $4`,
-          [projectId, numeric, search, limit],
+          [projectId, numericId, normalizedSearch, limit],
         )).rows
         : await readRecentPlayers(pool, projectId, limit);
 

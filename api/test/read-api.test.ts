@@ -850,6 +850,73 @@ test("recent players scan newest sessions and stop after filling the page", asyn
   await app.close();
 });
 
+test("player search keeps username, display name, and numeric ID filters indexable", async () => {
+  const searches: Array<{ sql: string; values: unknown[] }> = [];
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("WITH ranked AS")) {
+        searches.push({ sql, values: values ?? [] });
+        return {
+          rows: [{
+            player_id: "123",
+            player_name: "SkyFloans",
+            player_display_name: "Sky",
+            avatar_url: null,
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+  const project = "20000000-0000-4000-8000-000000000001";
+  const headers = { authorization: `Bearer ${"x".repeat(40)}` };
+
+  const usernameResponse = await app.inject({
+    method: "GET",
+    url: `/v1/projects/${project}/players?query=Sky&limit=50`,
+    headers,
+  });
+  const idResponse = await app.inject({
+    method: "GET",
+    url: `/v1/projects/${project}/players?query=123&limit=50`,
+    headers,
+  });
+  const oversizedIdResponse = await app.inject({
+    method: "GET",
+    url: `/v1/projects/${project}/players?query=99999999999999999999&limit=50`,
+    headers,
+  });
+
+  assert.equal(usernameResponse.statusCode, 200);
+  assert.equal(idResponse.statusCode, 200);
+  assert.equal(oversizedIdResponse.statusCode, 200);
+  assert.equal(searches.length, 3);
+  assert.deepEqual(searches[0].values, [project, null, "sky", 50]);
+  assert.deepEqual(searches[1].values, [project, "123", "123", 50]);
+  assert.deepEqual(searches[2].values, [project, null, "99999999999999999999", 50]);
+  assert.match(searches[0].sql, /s\.player_id = \$2::bigint/);
+  assert.match(searches[0].sql, /lower\(s\.player_name\) LIKE \$3::text \|\| '%'/);
+  assert.match(searches[0].sql, /lower\(s\.player_display_name\) LIKE \$3::text \|\| '%'/);
+  assert.doesNotMatch(searches[0].sql, /s\.player_id::text/);
+  assert.doesNotMatch(searches[0].sql, /COALESCE\(s\.player_display_name/);
+  await app.close();
+});
+
 test("grouped logs bound candidate groups before calculating exact statistics", async () => {
   let groupsSql = "";
   const pool = {
