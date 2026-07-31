@@ -875,8 +875,12 @@ function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: 
   const { width, height } = chartSize
   const top = 18
   const bottom = 32
+  const ticks = [0, Math.round(max / 3), Math.round(max * 2 / 3), max]
+  const plotLeft = Math.max(36, Math.max(...ticks.map((tick) => String(tick).length)) * 7 + 14)
+  const plotRight = width - 18
+  const plotWidth = Math.max(1, plotRight - plotLeft)
   const point = (index: number, value: number) => {
-    const x = 36 + index * ((width - 54) / Math.max(1, visibleData.length - 1))
+    const x = plotLeft + index * (plotWidth / Math.max(1, visibleData.length - 1))
     const y = top + (max - value) * ((height - top - bottom) / max)
     return [x, y] as const
   }
@@ -898,24 +902,24 @@ function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: 
     return () => observer.disconnect()
   }, [])
 
-  const ticks = [0, Math.round(max / 3), Math.round(max * 2 / 3), max]
   return (
     <div className={`chart-wrap ${loading ? 'is-loading' : ''}`} ref={chartRef}>
       {visibleData.length ? <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Client and server event activity" onPointerLeave={() => setTooltip(null)}>
-        {ticks.map((tick) => { const [, y] = point(0, tick); return <g key={tick}><line x1="36" x2={width - 18} y1={y} y2={y} className="chart-grid" /><text x="4" y={y + 4}>{tick}</text></g> })}
-        {showClient && <polygon points={`36,${height - bottom} ${line('client')} ${width - 18},${height - bottom}`} className="chart-area" />}
+        {ticks.map((tick) => { const [, y] = point(0, tick); return <line key={tick} x1={plotLeft} x2={plotRight} y1={y} y2={y} className="chart-grid" /> })}
+        {showClient && <polygon points={`${plotLeft},${height - bottom} ${line('client')} ${plotRight},${height - bottom}`} className="chart-area" />}
         {showClient && <polyline points={line('client')} className="chart-line client" />}
         {showServer && <polyline points={line('server')} className="chart-line server" />}
         {visibleData.map((item, index) => {
           const [clientX, clientY] = point(index, item.client)
           const [serverX, serverY] = point(index, item.server)
           const showLabel = visibleData.length <= 12 || index % Math.ceil(visibleData.length / 8) === 0 || index === visibleData.length - 1
-          const step = visibleData.length > 1 ? (width - 54) / (visibleData.length - 1) : width - 54
-          const hitStart = index === 0 ? 18 : clientX - step / 2
+          const step = visibleData.length > 1 ? plotWidth / (visibleData.length - 1) : plotWidth
+          const hitStart = index === 0 ? plotLeft / 2 : clientX - step / 2
           const hitEnd = index === visibleData.length - 1 ? width : clientX + step / 2
           const tooltipY = Math.min(showClient ? clientY : height, showServer ? serverY : height)
           return <g key={`${item.time}-${index}`}>{showLabel && <text x={clientX} y={height - 8} textAnchor="middle">{item.time}</text>}{showClient && <circle cx={clientX} cy={clientY} r="5" className="chart-dot client" />}{showServer && <circle cx={serverX} cy={serverY} r="5" className="chart-dot server" />}<rect className="chart-hit-area" x={hitStart} y={top} width={Math.max(1, hitEnd - hitStart)} height={height - top - bottom} tabIndex={0} role="button" aria-label={`${item.time}. ${showClient ? `${item.client} client events. ` : ''}${showServer ? `${item.server} server events.` : ''}`} onPointerEnter={() => setTooltip({ index, x: clientX, y: tooltipY })} onPointerMove={() => setTooltip({ index, x: clientX, y: tooltipY })} onFocus={() => setTooltip({ index, x: clientX, y: tooltipY })} onBlur={() => setTooltip(null)} /></g>
         })}
+        {ticks.map((tick) => { const [, y] = point(0, tick); return <text key={tick} x={plotLeft - 10} y={y + 4} textAnchor="end">{tick}</text> })}
       </svg> : <div className="chart-empty">{loading ? 'Loading activity…' : 'No activity in this range'}</div>}
       {tooltip && visibleData[tooltip.index] && <div className="chart-tooltip" style={{ left: `${Math.min(width - 78, Math.max(78, tooltip.x))}px`, top: `${Math.max(100, tooltip.y)}px` }}><strong>{visibleData[tooltip.index].time}</strong>{showClient && <span><i className="client" />Client <b>{visibleData[tooltip.index].client}</b></span>}{showServer && <span><i className="server" />Server <b>{visibleData[tooltip.index].server}</b></span>}</div>}
       <table className="sr-only"><caption>Chart data for the selected filters</caption><thead><tr><th>Time</th>{showClient && <th>Client events</th>}{showServer && <th>Server events</th>}</tr></thead><tbody>{visibleData.map((item, index) => <tr key={index}><td>{item.time}</td>{showClient && <td>{item.client}</td>}{showServer && <td>{item.server}</td>}</tr>)}</tbody></table>
