@@ -10,8 +10,6 @@ const fragmentShader = /* glsl */ `
   precision highp float;
 
   uniform vec2 uResolution;
-  uniform vec2 uRippleOrigin;
-  uniform float uRippleStartedAt;
   uniform float uTime;
   uniform vec3 uCoral;
   uniform vec3 uEmber;
@@ -87,14 +85,6 @@ const fragmentShader = /* glsl */ `
     float centerDistance = length(centered * vec2(0.78, 1.0));
     density -= (1.0 - smoothstep(0.16, 0.52, centerDistance)) * 0.23;
 
-    float rippleAge = max(uTime - uRippleStartedAt, 0.0);
-    if (uRippleStartedAt >= 0.0 && rippleAge < 3.0) {
-      float rippleDistance = distance(gl_FragCoord.xy, uRippleOrigin) / uResolution.y;
-      float rippleRadius = rippleAge * 0.24;
-      float ring = exp(-pow((rippleDistance - rippleRadius) / 0.035, 2.0));
-      density += ring * exp(-rippleAge * 0.85) * 0.72;
-    }
-
     float coverage = smoothstep(0.08, 0.56, density);
     float visibleCell = step(bayerThreshold(cell), coverage);
     float triangle = triangleMask(localPosition, cell);
@@ -139,8 +129,6 @@ export function AuthTriangleField() {
       const camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1)
       const uniforms = {
         uResolution: { value: new THREE.Vector2(1, 1) },
-        uRippleOrigin: { value: new THREE.Vector2(-10_000, -10_000) },
-        uRippleStartedAt: { value: -1 },
         uTime: { value: 0 },
         uCoral: { value: new THREE.Color('#ed7b66') },
         uEmber: { value: new THREE.Color('#ff9258') },
@@ -184,30 +172,16 @@ export function AuthTriangleField() {
         animationFrame = window.requestAnimationFrame(animate)
       }
 
-      const startRipple = (event: PointerEvent) => {
-        const bounds = canvas.getBoundingClientRect()
-        if (!bounds.width || !bounds.height) return
-        const scaleX = canvas.width / bounds.width
-        const scaleY = canvas.height / bounds.height
-        uniforms.uRippleOrigin.value.set(
-          (event.clientX - bounds.left) * scaleX,
-          (bounds.bottom - event.clientY) * scaleY,
-        )
-        uniforms.uRippleStartedAt.value = uniforms.uTime.value
-      }
-
       const resizeObserver = new ResizeObserver(resize)
       resizeObserver.observe(host)
       resize()
 
       if (!reduceMotion) {
-        window.addEventListener('pointerdown', startRipple, { passive: true })
         animationFrame = window.requestAnimationFrame(animate)
       }
 
       disposeScene = () => {
         window.cancelAnimationFrame(animationFrame)
-        window.removeEventListener('pointerdown', startRipple)
         resizeObserver.disconnect()
         geometry.dispose()
         material.dispose()
