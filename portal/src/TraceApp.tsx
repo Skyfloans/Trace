@@ -11,6 +11,7 @@ import {
   type AIClassification, type ErrorAICategory, type FeedbackAICategory, type IncomingProjectInvitation, type LogOccurrence, type LogSide, type ManagedProject, type PlayerSummary, type Project, type ProjectInvitation, type ProjectMember,
   type RobloxGameMetadata, type RobloxPlaceAccess, type RobloxPlaceSnapshot, type RobloxPluginPairingApproval, type RobloxPluginPairingPreview, type ServerJob, type Session, type Severity,
 } from './api'
+import { AuthTriangleField } from './AuthTriangleField'
 import './App.css'
 
 type Page = 'overview' | 'players' | 'player' | 'logs' | 'feedback' | 'games' | 'team' | 'session' | 'error' | 'job'
@@ -470,44 +471,7 @@ function SignIn({ oauthError, returnTo = null }: { oauthError: string | null; re
     : null
   return (
     <div className="auth-layout">
-      <svg className="auth-motion-field" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
-        <defs>
-          <linearGradient id="auth-ribbon-orange" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#ffb266" />
-            <stop offset=".45" stopColor="#ff580f" />
-            <stop offset="1" stopColor="#d93600" />
-          </linearGradient>
-          <linearGradient id="auth-ribbon-ember" x1="0" y1="1" x2="1" y2="0">
-            <stop offset="0" stopColor="#6d2109" />
-            <stop offset=".52" stopColor="#ff7a1a" />
-            <stop offset="1" stopColor="#ff580f" />
-          </linearGradient>
-          <radialGradient id="auth-orb" cx="50%" cy="50%" r="50%">
-            <stop offset="0" stopColor="#ff580f" stopOpacity=".8" />
-            <stop offset=".45" stopColor="#ff8a2a" stopOpacity=".32" />
-            <stop offset="1" stopColor="#44200f" stopOpacity="0" />
-          </radialGradient>
-          <filter id="auth-soften" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="32" />
-          </filter>
-          <filter id="auth-glow" x="-30%" y="-30%" width="160%" height="160%">
-            <feGaussianBlur stdDeviation="10" result="blur" />
-            <feColorMatrix in="blur" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 .72 0" result="glow" />
-            <feMerge>
-              <feMergeNode in="glow" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
-        <circle className="auth-motion-orb" cx="1105" cy="194" r="330" fill="url(#auth-orb)" />
-        <g className="auth-ribbon auth-ribbon-back" filter="url(#auth-soften)">
-          <path d="M1510 -130 C1220 22 1174 282 936 363 C704 443 438 311 202 498 C48 620 -72 710 -186 717" fill="none" stroke="url(#auth-ribbon-ember)" strokeWidth="154" strokeLinecap="round" />
-        </g>
-        <g className="auth-ribbon auth-ribbon-front" filter="url(#auth-glow)">
-          <path d="M1542 -72 C1268 36 1225 235 1002 326 C757 426 526 344 312 480 C121 601 -17 699 -184 686" fill="none" stroke="url(#auth-ribbon-orange)" strokeWidth="92" strokeLinecap="round" />
-        </g>
-        <path className="auth-ribbon-highlight" d="M1512 -61 C1266 51 1223 214 1008 301 C774 396 559 332 351 452" fill="none" stroke="rgba(255,255,255,.48)" strokeWidth="2" strokeLinecap="round" />
-      </svg>
+      <AuthTriangleField />
       <main className="auth-panel" aria-labelledby="sign-in-title">
         <div className="auth-lockup"><img src="/trace-logo.png" alt="" /><h1 id="sign-in-title">trace</h1></div>
         <p className="auth-tagline">Error observability for Roblox developers</p>
