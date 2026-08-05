@@ -92,8 +92,11 @@ automatically.
 ## Response contract
 
 Return only the JSON object required by the response schema. Keep the title
-under 80 characters and the summary under 400 characters. For a fixed outcome,
-the summary must state the observed failure, the causal code defect, and the
-mechanism of the correction—not merely that logging or error handling changed.
-Do not include chain-of-thought; provide only the concise, observable reason
-for the change or for declining it.
+under 80 characters. For a fixed outcome, use `reason` as a concise Issue
+sentence that names the observed failure and its causal code defect. Use
+`summary` as a concise Fix sentence that says how the edit prevents or safely
+recovers from that failure. Each must be a complete sentence, must not repeat
+the other, and should stay under 240 characters. Do not add `Issue:` or `Fix:`
+prefixes; Trace formats those labels in the review UI. Do not include
+chain-of-thought; provide only the concise, observable reason for the change or
+for declining it.

@@ -1023,7 +1023,7 @@ async function saveReadyProposal(
       [
         proposal.id,
         result.title,
-        `Root cause: ${result.reason}\n\n${result.summary}`,
+        `Issue: ${result.reason}\n\nFix: ${result.summary}`,
         result.confidence,
         result.risk,
         usage.input,
@@ -1338,28 +1338,59 @@ async function queueProjectRun(
          FROM display_error_rollups_hourly
          WHERE project_id = $1
          GROUP BY display_group_id
+       ), family_candidates AS (
+         SELECT error.id AS error_group_id,
+                error.ai_category::text AS ai_category,
+                COALESCE(impact.event_count, 0) AS event_count,
+                error.last_seen_at,
+                ROW_NUMBER() OVER (
+                  PARTITION BY COALESCE(error.ai_family_key, error.fingerprint)
+                  ORDER BY
+                    CASE error.ai_category
+                      WHEN 'critical' THEN 0
+                      WHEN 'high' THEN 1
+                      WHEN 'medium' THEN 2
+                      WHEN 'low' THEN 3
+                    END,
+                    COALESCE(impact.event_count, 0) DESC,
+                    error.last_seen_at DESC,
+                    error.id
+                ) AS family_rank
+         FROM display_error_groups error
+         LEFT JOIN impact ON impact.display_group_id = error.id
+         WHERE error.project_id = $1
+           AND error.ai_category IN ('critical', 'high', 'medium', 'low')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM roblox_autofix_proposals existing
+             JOIN display_error_groups existing_error
+               ON existing_error.id = existing.error_group_id
+             WHERE existing.project_id = $1
+               AND COALESCE(existing_error.ai_family_key, existing_error.fingerprint) =
+                   COALESCE(error.ai_family_key, error.fingerprint)
+               AND (
+                 existing.snapshot_id = $2
+                 OR existing.status IN ('queued', 'processing', 'ready', 'conflict')
+                 OR (
+                   existing.status = 'accepted'
+                   AND existing.reviewed_at > now() - INTERVAL '7 days'
+                 )
+               )
+           )
        )
-       SELECT error.id AS error_group_id, error.ai_category::text
-       FROM display_error_groups error
-       LEFT JOIN impact ON impact.display_group_id = error.id
-       WHERE error.project_id = $1
-         AND error.ai_category IN ('critical', 'high', 'medium', 'low')
-         AND NOT EXISTS (
-           SELECT 1
-           FROM roblox_autofix_proposals existing
-           WHERE existing.snapshot_id = $2
-             AND existing.error_group_id = error.id
-         )
+       SELECT error_group_id, ai_category
+       FROM family_candidates
+       WHERE family_rank = 1
        ORDER BY
-         CASE error.ai_category
+         CASE ai_category
            WHEN 'critical' THEN 0
            WHEN 'high' THEN 1
            WHEN 'medium' THEN 2
            WHEN 'low' THEN 3
          END,
-         COALESCE(impact.event_count, 0) DESC,
-         error.last_seen_at DESC,
-         error.id
+         event_count DESC,
+         last_seen_at DESC,
+         error_group_id
        LIMIT $3`,
       [projectId, snapshotId, remainingCapacity],
     );
@@ -1412,6 +1443,9 @@ async function queueProjectRun(
 export async function queueScheduledAutofixRuns(
   options: AutofixSchedulerOptions,
 ): Promise<number> {
+  await options.pool.query(
+    "DELETE FROM roblox_autofix_history WHERE expires_at <= now()",
+  );
   const eligible = await options.pool.query<{
     credential_id: string;
     project_id: string;

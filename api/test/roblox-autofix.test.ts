@@ -570,6 +570,9 @@ test("the ten-minute scheduler only fills vacancies below 15 unresolved requests
   let runCapacity: unknown;
   let inserted = 0;
   const query = async (sql: string, values: unknown[] = []) => {
+    if (sql.includes("DELETE FROM roblox_autofix_history")) {
+      return { rows: [], rowCount: 2 };
+    }
     if (sql.includes("SELECT DISTINCT ON (credential.project_id)")) {
       return {
         rows: [{ project_id: projectId, credential_id: credentialId }],

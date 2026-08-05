@@ -154,12 +154,21 @@ Apply migration 027 after the place-access and plugin-pairing migrations:
 npm run migrate:roblox-autofix
 ```
 
+Apply migration 030 to enable the shared seven-day script-version history:
+
+```bash
+npm run migrate:roblox-autofix-history
+```
+
 Autofix is enabled by an active Studio plugin connection and a verified place
 snapshot. The scheduler checks eligible projects immediately on startup and
 every ten minutes. It fills only vacant review slots, so a project never has
 more than 15 unresolved queued, processing, ready, or conflicted requests.
 Selection is ordered critical, high, medium, then low, with impact count and
-recency as tie-breakers. A bug is attempted at most once per snapshot.
+recency as tie-breakers. Requests are deduplicated by their normalized AI error
+family, including slightly different messages for the same underlying issue.
+An active request blocks another in that family, and an accepted fix suppresses
+the family for seven days.
 
 The single-concurrency worker downloads and checksum-verifies the RBXL, reads
 its LZ4- or ZSTD-compressed Script, LocalScript, and ModuleScript sources,
@@ -167,7 +176,7 @@ selects a bounded set of relevant scripts, and makes one OpenRouter request per
 bug. Each request has a 45-second timeout, a 5,000-token output ceiling, and the
 whole run has a 120,000 input / 45,000 output token budget. Results below 0.80
 confidence, ambiguous source matches, oversized scripts, invented paths,
-unchanged source, or more than three edited scripts are recorded as `unable`
+unchanged source, or more than five edited scripts are recorded as `unable`
 without retry. Autofix defaults to `openai/gpt-5.6-luna` through
 `AUTOFIX_MODEL`, which can be upgraded independently of the classification
 model later.
@@ -186,6 +195,9 @@ GET  /v1/plugin-autofix/proposals
 POST /v1/plugin-autofix/runs
 GET  /v1/plugin-autofix/proposals/:proposalId
 POST /v1/plugin-autofix/proposals/:proposalId/review
+GET  /v1/plugin-autofix/history
+GET  /v1/plugin-autofix/history/:historyId
+POST /v1/plugin-autofix/history/:historyId/restored
 ```
 
 Accepted proposals are still not published by the API. Studio applies the

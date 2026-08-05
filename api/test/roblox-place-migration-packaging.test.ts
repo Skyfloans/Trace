@@ -64,3 +64,24 @@ test("the API image packages the canonical Roblox autofix migration", async () =
 
   assert.equal(packaged, canonical);
 });
+
+test("the API image packages the canonical Roblox autofix history migration", async () => {
+  const [canonical, packaged] = await Promise.all([
+    readFile(
+      new URL(
+        "../../database/migrations/030_roblox_autofix_history.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+    readFile(
+      new URL(
+        "../scripts/migrations/030_roblox_autofix_history.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ]);
+
+  assert.equal(packaged, canonical);
+});

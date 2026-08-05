@@ -166,6 +166,12 @@ test("plugin autofix queues at most 15 classified bugs in critical-first order",
   assert.match(candidateSql, /WHEN 'critical' THEN 0/);
   assert.match(candidateSql, /WHEN 'high' THEN 1/);
   assert.match(candidateSql, /COALESCE\(impact\.event_count, 0\) DESC/);
+  assert.match(
+    candidateSql,
+    /PARTITION BY COALESCE\(error\.ai_family_key, error\.fingerprint\)/,
+  );
+  assert.match(candidateSql, /existing\.status = 'accepted'/);
+  assert.match(candidateSql, /INTERVAL '7 days'/);
   assert.deepEqual(insertedCategories, ["critical", "high"]);
   await app.close();
 });
@@ -408,5 +414,151 @@ test("bulk retry requeues failed and budget-blocked requests in the current inbo
   assert.deepEqual(response.json(), { queued: 2, status: "queued" });
   assert.deepEqual(resetProposalIds, retryableIds);
   assert.deepEqual(resetRunIds, retryableRunIds);
+  await app.close();
+});
+
+test("accepting a fix stores the exact Studio versions and reviewer in shared history", async () => {
+  const proposalId = "60000000-0000-4000-8000-000000000001";
+  const appliedFiles = [{
+    path: "ServerScriptService.CashService",
+    className: "Script" as const,
+    previousSource: "return saveOnce()",
+    appliedSource: "return saveWithRetry()",
+  }];
+  let savedHistoryValues: unknown[] | null = null;
+  const reviewedAt = "2026-08-04T23:00:00.000Z";
+  const query = async (sql: string) => {
+    if (sql.includes("UPDATE roblox_plugin_credentials credentials")) {
+      return { rows: [pluginSession()], rowCount: 1 };
+    }
+    if (sql === "BEGIN" || sql === "COMMIT" || sql === "ROLLBACK") {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("SELECT id, status") && sql.includes("FOR UPDATE")) {
+      return { rows: [{ id: proposalId, status: "ready" }], rowCount: 1 };
+    }
+    if (sql.includes("SELECT script_path, script_class")) {
+      return {
+        rows: [{
+          script_path: appliedFiles[0].path,
+          script_class: appliedFiles[0].className,
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("SELECT credential.user_id")) {
+      return {
+        rows: [{
+          user_id: "10000000-0000-4000-8000-000000000001",
+          name: "BuilderDimitri",
+        }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("SET status = 'accepted'")) {
+      return {
+        rows: [{ id: proposalId, status: "accepted", reviewed_at: reviewedAt }],
+        rowCount: 1,
+      };
+    }
+    if (sql.includes("INSERT INTO roblox_autofix_history")) {
+      return { rows: [], rowCount: 1 };
+    }
+    if (sql.includes("DELETE FROM roblox_autofix_history")) {
+      return { rows: [], rowCount: 0 };
+    }
+    throw new Error(`Unexpected query: ${sql}`);
+  };
+  const client = {
+    query: async (sql: string, values: unknown[] = []) => {
+      if (sql.includes("INSERT INTO roblox_autofix_history")) {
+        savedHistoryValues = values;
+      }
+      return query(sql);
+    },
+    release: () => undefined,
+  } as unknown as PoolClient;
+  const pool = {
+    query,
+    connect: async () => client,
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "https://tracestack.gg",
+    null,
+    pool,
+    null,
+    { available: true, model: "openai/gpt-5.4-nano" },
+  );
+
+  const response = await app.inject({
+    method: "POST",
+    url: `/v1/plugin-autofix/proposals/${proposalId}/review`,
+    headers: { authorization: `Bearer ${"t".repeat(43)}` },
+    payload: { action: "accepted", appliedFiles },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().historyCount, 1);
+  assert.ok(savedHistoryValues);
+  assert.equal(savedHistoryValues[2], appliedFiles[0].path);
+  assert.equal(savedHistoryValues[4], appliedFiles[0].previousSource);
+  assert.equal(savedHistoryValues[5], appliedFiles[0].appliedSource);
+  assert.equal(savedHistoryValues[7], "BuilderDimitri");
+  await app.close();
+});
+
+test("history is project-shared, timestamped, and limited to unexpired versions", async () => {
+  const acceptedAt = "2026-08-04T23:00:00.000Z";
+  const pool = {
+    query: async (sql: string, values: unknown[] = []) => {
+      if (sql.includes("UPDATE roblox_plugin_credentials credentials")) {
+        return { rows: [pluginSession()], rowCount: 1 };
+      }
+      if (sql.includes("DELETE FROM roblox_autofix_history")) {
+        return { rows: [], rowCount: 0 };
+      }
+      if (sql.includes("FROM roblox_autofix_history history")) {
+        assert.deepEqual(values, [projectId]);
+        assert.match(sql, /history\.expires_at > now\(\)/);
+        return {
+          rows: [{
+            id: "70000000-0000-4000-8000-000000000001",
+            proposal_id: "60000000-0000-4000-8000-000000000001",
+            script_path: "ServerScriptService.CashService",
+            script_class: "Script",
+            accepted_by_name: "BuilderDimitri",
+            accepted_at: acceptedAt,
+            restored_by_name: null,
+            restored_at: null,
+            expires_at: "2026-08-11T23:00:00.000Z",
+            title: "Retry transient saves",
+            summary: "Issue: Save fails on transient 502 errors.\n\nFix: Retry the bounded update.",
+          }],
+          rowCount: 1,
+        };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(
+    pool,
+    "https://tracestack.gg",
+    null,
+    pool,
+    null,
+    { available: true, model: "openai/gpt-5.4-nano" },
+  );
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/plugin-autofix/history",
+    headers: { authorization: `Bearer ${"t".repeat(43)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().retentionDays, 7);
+  assert.equal(response.json().entries[0].acceptedBy, "BuilderDimitri");
+  assert.equal(response.json().entries[0].acceptedAt, acceptedAt);
   await app.close();
 });

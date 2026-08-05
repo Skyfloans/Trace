@@ -14,6 +14,7 @@ local INSTALL_ID_SETTING = "TraceAutofixInstallIdV1"
 local TRACE_LOGO_IMAGE = "rbxassetid://94183872785973"
 
 type PairingRequest = Api.PairingRequest
+type HistoryList = Api.HistoryList
 type PluginSession = Api.PluginSession
 type ProposalDetail = Api.ProposalDetail
 type ProposalFile = Api.ProposalFile
@@ -21,14 +22,17 @@ type ProposalList = Api.ProposalList
 type StudioContext = Api.StudioContext
 
 type PreparedChange = {
+	className: "Script" | "LocalScript" | "ModuleScript",
 	currentSource: string,
 	mergedSource: string,
+	path: string,
 	script: LuaSourceContainer,
 }
 
 local api = Api.new(API_BASE_URL)
 local activePairing: PairingRequest? = nil
 local activeProposal: ProposalDetail? = nil
+local currentHistory: HistoryList? = nil
 local currentReviews: ProposalList? = nil
 local currentSession: PluginSession? = nil
 local refreshGeneration = 0
@@ -73,6 +77,7 @@ local function showConnect(errorMessage: string?)
 	refreshGeneration += 1
 	currentSession = nil
 	currentReviews = nil
+	currentHistory = nil
 	activeProposal = nil
 	local context = studioContext()
 	widget:setState({
@@ -94,6 +99,37 @@ local function showReviews(errorMessage: string?, notice: string?)
 		errorMessage = errorMessage,
 		notice = notice,
 	})
+end
+
+local function showHistory(errorMessage: string?, notice: string?)
+	widget:setState({
+		kind = "history",
+		projectName = if currentSession then currentSession.project.name else "Trace",
+		history = currentHistory,
+		errorMessage = errorMessage,
+		notice = notice,
+	})
+end
+
+local function refreshHistory(errorMessage: string?)
+	local token = credential
+	if not token or not currentSession then
+		showConnect("Connect this Studio to Trace before loading history.")
+		return
+	end
+	refreshGeneration += 1
+	local generation = refreshGeneration
+	showHistory(errorMessage, nil)
+	task.spawn(function()
+		local response = api:getHistory(token)
+		if generation ~= refreshGeneration then return end
+		if not response.ok or not response.data then
+			showHistory(response.errorMessage or "Trace could not load change history.", nil)
+			return
+		end
+		currentHistory = response.data
+		showHistory(nil, nil)
+	end)
 end
 
 local function refreshReviews(errorMessage: string?)
@@ -124,6 +160,7 @@ end
 local function showConnected(session: PluginSession)
 	currentSession = session
 	currentReviews = nil
+	currentHistory = nil
 	activeProposal = nil
 	refreshReviews(nil)
 end
@@ -312,8 +349,10 @@ local function prepareChanges(proposal: ProposalDetail): ({ PreparedChange }?, s
 		local mergedSource, mergeError = mergeFile(file, currentSource)
 		if not mergedSource then return nil, mergeError end
 		table.insert(prepared, {
+			className = file.className,
 			currentSource = currentSource,
 			mergedSource = mergedSource,
+			path = file.path,
 			script = sourceContainer,
 		})
 	end
@@ -391,7 +430,16 @@ local function acceptProposal(proposalId: string)
 			markConflict(proposal, applyError or "Studio could not apply this proposal safely.")
 			return
 		end
-		local response = api:reviewProposal(token, proposal.id, "accepted", nil)
+		local appliedFiles = {}
+		for _, change in prepared do
+			table.insert(appliedFiles, {
+				appliedSource = change.mergedSource,
+				className = change.className,
+				path = change.path,
+				previousSource = change.currentSource,
+			})
+		end
+		local response = api:reviewProposal(token, proposal.id, "accepted", nil, appliedFiles)
 		proposal.status = "accepted"
 		if not response.ok then
 			widget:setState({
@@ -404,6 +452,78 @@ local function acceptProposal(proposalId: string)
 		activeProposal = nil
 		currentReviews = nil
 		refreshReviews(nil)
+	end)
+end
+
+local function restoreHistory(historyId: string)
+	local token = credential
+	if not token then return end
+	showHistory(nil, "Checking the current Studio script before restoring…")
+	task.spawn(function()
+		local response = api:getHistoryEntry(token, historyId)
+		if not response.ok or not response.data then
+			showHistory(response.errorMessage or "Trace could not load this saved script version.", nil)
+			return
+		end
+		local entry = response.data
+		if entry.restoredAt then
+			showHistory("This script version has already been restored.", nil)
+			return
+		end
+		local sourceContainer, resolveError = resolveScript(entry.path)
+		if not sourceContainer then
+			showHistory(resolveError, nil)
+			return
+		end
+		local readSucceeded, currentOrError = pcall(
+			function() return ScriptEditorService:GetEditorSource(sourceContainer) end
+		)
+		if not readSucceeded then
+			showHistory("Studio would not allow Trace to read " .. entry.path .. ".", nil)
+			return
+		end
+		local currentSource = currentOrError :: string
+		if normalizeSource(currentSource) ~= normalizeSource(entry.appliedSource) then
+			showHistory(
+				entry.path .. " has changed since this fix was accepted. Trace did not overwrite the newer version.",
+				nil
+			)
+			return
+		end
+		local recording = ChangeHistoryService:TryBeginRecording("Restore Trace Autofix version")
+		if not recording then
+			showHistory(
+				"Studio could not start an undo recording. Finish the current plugin action and try again.",
+				nil
+			)
+			return
+		end
+		local restored, restoreError = pcall(function()
+			ScriptEditorService:UpdateSourceAsync(sourceContainer, function(latestSource: string)
+				if normalizeSource(latestSource) ~= normalizeSource(entry.appliedSource) then
+					error("source_changed_during_restore")
+				end
+				return entry.previousSource
+			end)
+		end)
+		if not restored then
+			ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Cancel)
+			showHistory(
+				if string.find(tostring(restoreError), "source_changed_during_restore", 1, true)
+					then "The script changed while Trace was restoring it. No change was kept."
+					else "Studio could not restore this script. No change was kept.",
+				nil
+			)
+			return
+		end
+		ChangeHistoryService:FinishRecording(recording, Enum.FinishRecordingOperation.Commit)
+		local synced = api:markHistoryRestored(token, historyId)
+		currentHistory = nil
+		if not synced.ok then
+			refreshHistory("The script was restored, but Trace could not sync the shared history status.")
+			return
+		end
+		refreshHistory(nil)
 	end)
 end
 
@@ -465,8 +585,12 @@ widget = Widget.new(plugin, {
 	onDisconnect = disconnect,
 	onOpenProposal = openProposal,
 	onRefresh = function() refreshReviews(nil) end,
+	onRefreshHistory = function() refreshHistory(nil) end,
 	onReject = rejectProposal,
+	onRestoreHistory = restoreHistory,
 	onRetry = retryProposal,
+	onShowHistory = function() refreshHistory(nil) end,
+	onShowRequests = function() refreshReviews(nil) end,
 	onStartOver = function()
 		activePairing = nil
 		showConnect(nil)

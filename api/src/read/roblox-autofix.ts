@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { Pool } from "pg";
 import { z } from "zod";
@@ -9,12 +10,20 @@ import { ReadApiError } from "./http.js";
 import { loadPluginSession } from "./roblox-plugin-auth.js";
 
 const proposalParamsSchema = z.object({ proposalId: z.uuid() });
+const historyParamsSchema = z.object({ historyId: z.uuid() });
 const createRunSchema = z.object({
   limit: z.number().int().min(1).max(MAX_AUTOFIX_PROPOSALS).default(15),
+});
+const appliedFileSchema = z.object({
+  path: z.string().trim().min(1).max(1_000),
+  className: z.enum(["Script", "LocalScript", "ModuleScript"]),
+  previousSource: z.string().max(1_048_576),
+  appliedSource: z.string().max(1_048_576),
 });
 const reviewSchema = z.object({
   action: z.enum(["accepted", "rejected", "conflict", "retry"]),
   message: z.string().trim().max(500).optional(),
+  appliedFiles: z.array(appliedFileSchema).max(5).optional(),
 });
 
 function noStore(reply: FastifyReply): void {
@@ -24,6 +33,10 @@ function noStore(reply: FastifyReply): void {
 
 function iso(value: unknown): string {
   return new Date(String(value)).toISOString();
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export async function registerRobloxAutofixRoutes(
@@ -216,28 +229,59 @@ export async function registerRobloxAutofixRoutes(
              FROM display_error_rollups_hourly
              WHERE project_id = $1
              GROUP BY display_group_id
+           ), family_candidates AS (
+             SELECT error.id AS error_group_id,
+                    error.ai_category::text AS ai_category,
+                    COALESCE(impact.event_count, 0) AS event_count,
+                    error.last_seen_at,
+                    ROW_NUMBER() OVER (
+                      PARTITION BY COALESCE(error.ai_family_key, error.fingerprint)
+                      ORDER BY
+                        CASE error.ai_category
+                          WHEN 'critical' THEN 0
+                          WHEN 'high' THEN 1
+                          WHEN 'medium' THEN 2
+                          WHEN 'low' THEN 3
+                        END,
+                        COALESCE(impact.event_count, 0) DESC,
+                        error.last_seen_at DESC,
+                        error.id
+                    ) AS family_rank
+             FROM display_error_groups error
+             LEFT JOIN impact ON impact.display_group_id = error.id
+             WHERE error.project_id = $1
+               AND error.ai_category IN ('critical', 'high', 'medium', 'low')
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM roblox_autofix_proposals existing
+                 JOIN display_error_groups existing_error
+                   ON existing_error.id = existing.error_group_id
+                 WHERE existing.project_id = $1
+                   AND COALESCE(existing_error.ai_family_key, existing_error.fingerprint) =
+                       COALESCE(error.ai_family_key, error.fingerprint)
+                   AND (
+                     existing.snapshot_id = $2
+                     OR existing.status IN ('queued', 'processing', 'ready', 'conflict')
+                     OR (
+                       existing.status = 'accepted'
+                       AND existing.reviewed_at > now() - INTERVAL '7 days'
+                     )
+                   )
+               )
            )
-           SELECT error.id AS error_group_id, error.ai_category::text
-           FROM display_error_groups error
-           LEFT JOIN impact ON impact.display_group_id = error.id
-           WHERE error.project_id = $1
-             AND error.ai_category IN ('critical', 'high', 'medium', 'low')
-             AND NOT EXISTS (
-               SELECT 1
-               FROM roblox_autofix_proposals existing
-               WHERE existing.snapshot_id = $2
-                 AND existing.error_group_id = error.id
-             )
+           SELECT error_group_id, ai_category
+           FROM family_candidates
+           WHERE family_rank = 1
            ORDER BY
-             CASE error.ai_category
+             CASE ai_category
                WHEN 'critical' THEN 0
                WHEN 'high' THEN 1
                WHEN 'medium' THEN 2
                WHEN 'low' THEN 3
              END,
-             COALESCE(impact.event_count, 0) DESC,
-             error.last_seen_at DESC,
-             error.id
+             event_count DESC,
+             last_seen_at DESC,
+             error_group_id
            LIMIT $3`,
           [session.project_id, snapshotId, Math.min(limit, remainingCapacity)],
         );
@@ -299,6 +343,134 @@ export async function registerRobloxAutofixRoutes(
       } finally {
         client.release();
       }
+    },
+  );
+
+  app.get("/v1/plugin-autofix/history", async (request, reply) => {
+    const session = await loadPluginSession(pool, request);
+    await pool.query(
+      "DELETE FROM roblox_autofix_history WHERE expires_at <= now()",
+    );
+    const result = await pool.query(
+      `SELECT history.id, history.proposal_id, history.script_path,
+              history.script_class, history.accepted_by_name,
+              history.accepted_at, history.restored_by_name,
+              history.restored_at, history.expires_at,
+              proposal.title, proposal.summary
+       FROM roblox_autofix_history history
+       JOIN roblox_autofix_proposals proposal ON proposal.id = history.proposal_id
+       WHERE history.project_id = $1
+         AND history.expires_at > now()
+       ORDER BY history.accepted_at DESC, history.script_path
+       LIMIT 100`,
+      [session.project_id],
+    );
+    noStore(reply);
+    return {
+      retentionDays: 7,
+      entries: result.rows.map((entry) => ({
+        id: entry.id,
+        proposalId: entry.proposal_id,
+        title: entry.title,
+        summary: entry.summary,
+        path: entry.script_path,
+        className: entry.script_class,
+        acceptedBy: entry.accepted_by_name,
+        acceptedAt: iso(entry.accepted_at),
+        restoredBy: entry.restored_by_name,
+        restoredAt: entry.restored_at ? iso(entry.restored_at) : null,
+        expiresAt: iso(entry.expires_at),
+      })),
+    };
+  });
+
+  app.get(
+    "/v1/plugin-autofix/history/:historyId",
+    async (request, reply) => {
+      const session = await loadPluginSession(pool, request);
+      const { historyId } = historyParamsSchema.parse(request.params);
+      const result = await pool.query(
+        `SELECT history.id, history.proposal_id, history.script_path,
+                history.script_class, history.previous_source,
+                history.applied_source, history.accepted_by_name,
+                history.accepted_at, history.restored_by_name,
+                history.restored_at, history.expires_at,
+                proposal.title, proposal.summary
+         FROM roblox_autofix_history history
+         JOIN roblox_autofix_proposals proposal ON proposal.id = history.proposal_id
+         WHERE history.id = $1
+           AND history.project_id = $2
+           AND history.expires_at > now()`,
+        [historyId, session.project_id],
+      );
+      const entry = result.rows[0];
+      if (!entry) {
+        throw new ReadApiError(
+          404,
+          "autofix_history_not_found",
+          "This saved script version is no longer available.",
+        );
+      }
+      noStore(reply);
+      return {
+        id: entry.id,
+        proposalId: entry.proposal_id,
+        title: entry.title,
+        summary: entry.summary,
+        path: entry.script_path,
+        className: entry.script_class,
+        previousSource: entry.previous_source,
+        previousSha256: sha256(entry.previous_source),
+        appliedSource: entry.applied_source,
+        appliedSha256: sha256(entry.applied_source),
+        acceptedBy: entry.accepted_by_name,
+        acceptedAt: iso(entry.accepted_at),
+        restoredBy: entry.restored_by_name,
+        restoredAt: entry.restored_at ? iso(entry.restored_at) : null,
+        expiresAt: iso(entry.expires_at),
+      };
+    },
+  );
+
+  app.post(
+    "/v1/plugin-autofix/history/:historyId/restored",
+    async (request, reply) => {
+      const session = await loadPluginSession(pool, request);
+      const { historyId } = historyParamsSchema.parse(request.params);
+      const result = await pool.query(
+        `UPDATE roblox_autofix_history history
+         SET restored_by_user_id = credential.user_id,
+             restored_by_name = COALESCE(
+               NULLIF("user".roblox_display_name, ''),
+               NULLIF("user".roblox_username, ''),
+               NULLIF("user".name, ''),
+               'Unknown user'
+             ),
+             restored_at = now()
+         FROM roblox_plugin_credentials credential
+         JOIN users "user" ON "user".id = credential.user_id
+         WHERE history.id = $1
+           AND history.project_id = $2
+           AND history.expires_at > now()
+           AND history.restored_at IS NULL
+           AND credential.id = $3
+         RETURNING history.id, history.restored_by_name, history.restored_at`,
+        [historyId, session.project_id, session.credential_id],
+      );
+      const entry = result.rows[0];
+      if (!entry) {
+        throw new ReadApiError(
+          404,
+          "autofix_history_not_found",
+          "This saved script version is no longer available.",
+        );
+      }
+      noStore(reply);
+      return {
+        id: entry.id,
+        restoredBy: entry.restored_by_name,
+        restoredAt: iso(entry.restored_at),
+      };
     },
   );
 
@@ -474,6 +646,7 @@ export async function registerRobloxAutofixRoutes(
 
   app.post(
     "/v1/plugin-autofix/proposals/:proposalId/review",
+    { bodyLimit: 6 * 1_024 * 1_024 },
     async (request, reply) => {
       const session = await loadPluginSession(pool, request);
       const { proposalId } = proposalParamsSchema.parse(request.params);
@@ -581,10 +754,135 @@ export async function registerRobloxAutofixRoutes(
           client.release();
         }
       }
+      if (body.action === "accepted") {
+        const client = await pool.connect();
+        try {
+          await client.query("BEGIN");
+          const proposal = await client.query<{
+            id: string;
+            status: string;
+          }>(
+            `SELECT id, status
+             FROM roblox_autofix_proposals
+             WHERE id = $1 AND project_id = $2
+             FOR UPDATE`,
+            [proposalId, session.project_id],
+          );
+          if (!proposal.rows[0] || !["ready", "conflict"].includes(proposal.rows[0].status)) {
+            throw new ReadApiError(
+              409,
+              "autofix_review_invalid",
+              "This proposal cannot be reviewed from its current state.",
+            );
+          }
+          const proposalFiles = await client.query<{
+            base_source: string;
+            proposed_source: string;
+            script_class: "Script" | "LocalScript" | "ModuleScript";
+            script_path: string;
+          }>(
+            `SELECT script_path, script_class, base_source, proposed_source
+             FROM roblox_autofix_files
+             WHERE proposal_id = $1
+             ORDER BY script_path`,
+            [proposalId],
+          );
+          const expected = new Map(
+            proposalFiles.rows.map((file) => [file.script_path, file.script_class]),
+          );
+          const appliedFiles = body.appliedFiles ?? proposalFiles.rows.map((file) => ({
+            path: file.script_path,
+            className: file.script_class,
+            previousSource: file.base_source,
+            appliedSource: file.proposed_source,
+          }));
+          const suppliedPaths = new Set(appliedFiles.map((file) => file.path));
+          if (
+            appliedFiles.length !== expected.size ||
+            suppliedPaths.size !== appliedFiles.length ||
+            appliedFiles.some((file) => expected.get(file.path) !== file.className)
+          ) {
+            throw new ReadApiError(
+              409,
+              "autofix_applied_files_mismatch",
+              "The applied Studio scripts do not match this proposal.",
+            );
+          }
+          const reviewer = await client.query<{
+            name: string;
+            user_id: string;
+          }>(
+            `SELECT credential.user_id,
+                    COALESCE(
+                      NULLIF("user".roblox_display_name, ''),
+                      NULLIF("user".roblox_username, ''),
+                      NULLIF("user".name, ''),
+                      'Unknown user'
+                    ) AS name
+             FROM roblox_plugin_credentials credential
+             JOIN users "user" ON "user".id = credential.user_id
+             WHERE credential.id = $1`,
+            [session.credential_id],
+          );
+          const acceptedBy = reviewer.rows[0];
+          if (!acceptedBy) {
+            throw new ReadApiError(
+              401,
+              "plugin_credential_invalid",
+              "This Trace plugin connection has expired or was revoked.",
+            );
+          }
+          const updated = await client.query(
+            `UPDATE roblox_autofix_proposals
+             SET status = 'accepted',
+                 reviewed_by_credential_id = $3,
+                 reviewed_at = now(),
+                 failure_reason = NULL,
+                 updated_at = now()
+             WHERE id = $1 AND project_id = $2
+             RETURNING id, status, reviewed_at`,
+            [proposalId, session.project_id, session.credential_id],
+          );
+          for (const file of appliedFiles) {
+            await client.query(
+              `INSERT INTO roblox_autofix_history (
+                 project_id, proposal_id, script_path, script_class,
+                 previous_source, applied_source, accepted_by_user_id,
+                 accepted_by_name, accepted_at
+               ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+              [
+                session.project_id,
+                proposalId,
+                file.path,
+                file.className,
+                file.previousSource,
+                file.appliedSource,
+                acceptedBy.user_id,
+                acceptedBy.name,
+                updated.rows[0].reviewed_at,
+              ],
+            );
+          }
+          await client.query(
+            "DELETE FROM roblox_autofix_history WHERE expires_at <= now()",
+          );
+          await client.query("COMMIT");
+          noStore(reply);
+          return {
+            id: proposalId,
+            status: "accepted",
+            reviewedAt: iso(updated.rows[0].reviewed_at),
+            historyCount: appliedFiles.length,
+          };
+        } catch (error) {
+          await client.query("ROLLBACK");
+          throw error;
+        } finally {
+          client.release();
+        }
+      }
       const allowedCurrent =
-        body.action === "accepted"
-          ? ["ready", "conflict"]
-          : body.action === "rejected"
+        body.action === "rejected"
             ? ["ready", "conflict", "unable", "failed"]
             : ["ready"];
       const result = await pool.query(

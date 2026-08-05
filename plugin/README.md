@@ -63,17 +63,37 @@ priority list every ten minutes and keeps no more than 15 unresolved requests
 for the project, ordered most critical first. Both the API and plugin cap the
 visible inbox at those 15 current requests, so older diagnostics never flood
 Studio. The compact inbox uses pull-request-style rows with a single-line title,
-status and impact metadata, severity color, and consistent truncation at narrow
-widget widths. The plugin refreshes the inbox automatically. Each ready request
-opens a dark unified diff with old/new line numbers. Requests without a concrete
-script edit are shown as diagnostics instead of empty code reviews; they can be
-retried with the bounded cross-script investigation or dismissed. Reviewable
-proposals can also be regenerated when the displayed diff addresses a symptom
-instead of the root cause. Processing work has a two-minute lease; if a deploy
-or worker interruption leaves a request stuck, the server automatically
-requeues it. The server-side solver can follow one bounded round of related
-scripts from the place manifest and combine necessary edits across as many as
-five scripts into one review.
+status and impact metadata, semantic status dots (green when ready, amber while
+preparing, neutral while queued, and coral/red when attention is needed), and
+consistent truncation at narrow widget widths. The plugin refreshes the inbox
+automatically. Each ready request shows a compact changed-script list with
+per-file addition and deletion counts; selecting a script opens a wide,
+GitHub-style split diff with a changed-script rail and persistent Accept,
+Regenerate, and Reject controls. Multi-script proposals can be reviewed file by
+file, then applied together as one undoable Studio action after a final
+confirmation modal. Issue details use separate concise `Issue` and `Fix`
+sections without a truncated expanded-text state. Requests
+without a concrete script edit are shown as diagnostics instead of empty code
+reviews; they can be retried with the bounded cross-script investigation or
+dismissed. Reviewable proposals can also be regenerated when the displayed diff
+addresses a symptom instead of the root cause. Processing work has a two-minute
+lease; if a deploy or worker interruption leaves a request stuck, the server
+automatically requeues it. The server-side solver can follow one bounded round
+of related scripts from the place manifest and combine necessary edits across
+as many as five scripts into one review.
+
+The top-level History tab is shared across the connected game. For seven days
+after acceptance it shows each changed script, the accepting user, and the UTC
+timestamp. Trace stores the exact source immediately before and after the
+accepted edit, so each script in a multi-script fix can be restored separately.
+A restore has its own confirmation and Studio undo recording, and is refused if
+the current source no longer matches the accepted version. This prevents an old
+history entry from overwriting newer teammate edits.
+
+Autofix selection is deduplicated by the existing normalized AI error-family
+key, so small message or stack variations of one underlying bug do not create
+parallel fix requests. Active requests and fixes accepted within the seven-day
+history window suppress another request for the same family.
 
 Before accepting, the plugin resolves every proposed path and reads the current
 editor source with `ScriptEditorService:GetEditorSource()`. If the source still

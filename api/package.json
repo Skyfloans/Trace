@@ -10,6 +10,7 @@
     "migrate:roblox-place-access": "node scripts/apply-roblox-place-access-migration.mjs",
     "migrate:roblox-plugin-pairing": "node scripts/apply-roblox-plugin-pairing-migration.mjs",
     "migrate:roblox-autofix": "node scripts/apply-roblox-autofix-migration.mjs",
+    "migrate:roblox-autofix-history": "node scripts/apply-roblox-autofix-history-migration.mjs",
     "retry:roblox-zstd-autofix": "node scripts/retry-roblox-zstd-autofix.mjs",
     "start": "node dist/server.js",
     "test": "tsx --test test/**/*.test.ts",

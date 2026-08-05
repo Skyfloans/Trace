@@ -1,9 +1,12 @@
 --!strict
 
 local Api = require(script.Parent.Api)
+local ConfirmationModal = require(script.Parent.ConfirmationModal)
+local DiffViewer = require(script.Parent.DiffViewer)
 local Theme = require(script.Parent.Theme)
 
 type Palette = Theme.Palette
+type HistoryList = Api.HistoryList
 type ProposalDetail = Api.ProposalDetail
 type ProposalList = Api.ProposalList
 type ProposalSummary = Api.ProposalSummary
@@ -15,18 +18,23 @@ export type Callbacks = {
 	onDisconnect: () -> (),
 	onOpenProposal: (proposalId: string) -> (),
 	onRefresh: () -> (),
+	onRefreshHistory: () -> (),
 	onReject: (proposalId: string) -> (),
+	onRestoreHistory: (historyId: string) -> (),
 	onRetry: (proposalId: string) -> (),
+	onShowHistory: () -> (),
+	onShowRequests: () -> (),
 	onStartOver: () -> (),
 	onVerify: (code: string) -> (),
 }
 
 export type ViewState = {
-	kind: "connect" | "loading" | "code" | "reviews" | "detail",
+	kind: "connect" | "loading" | "code" | "reviews" | "detail" | "history",
 	actionLabel: string?,
 	browserUrl: string?,
 	errorMessage: string?,
 	loadingMessage: string?,
+	history: HistoryList?,
 	notice: string?,
 	projectName: string?,
 	proposal: ProposalDetail?,
@@ -283,10 +291,23 @@ local function categoryColor(palette: Palette, category: string): Color3
 	elseif category == "high" then
 		return palette.accent
 	elseif category == "medium" then
-		return Color3.fromRGB(229, 184, 102)
+		return palette.warning
 	else
 		return palette.muted
 	end
+end
+
+local function reviewStatusColor(palette: Palette, status: string): Color3
+	if status == "ready" then
+		return palette.success
+	elseif status == "processing" then
+		return palette.warning
+	elseif status == "conflict" or status == "unable" then
+		return palette.accent
+	elseif status == "failed" then
+		return palette.error
+	end
+	return palette.muted
 end
 
 local function createPill(parent: Instance, text: string, color: Color3, order: number): TextLabel
@@ -360,13 +381,14 @@ local function createProposalRow(
 	row.Text = ""
 	row.Parent = parent
 
-	local severity = Instance.new("Frame")
-	severity.BackgroundColor3 = categoryColor(palette, proposal.category)
-	severity.BorderSizePixel = 0
-	severity.Position = UDim2.fromOffset(12, 16)
-	severity.Size = UDim2.fromOffset(8, 8)
-	addCorner(severity, 4)
-	severity.Parent = row
+	local statusIndicator = Instance.new("Frame")
+	statusIndicator.Name = "StatusIndicator"
+	statusIndicator.BackgroundColor3 = reviewStatusColor(palette, proposal.status)
+	statusIndicator.BorderSizePixel = 0
+	statusIndicator.Position = UDim2.fromOffset(12, 15)
+	statusIndicator.Size = UDim2.fromOffset(9, 9)
+	addCorner(statusIndicator, 5)
+	statusIndicator.Parent = row
 
 	local title = Instance.new("TextLabel")
 	title.BackgroundTransparency = 1
@@ -375,8 +397,8 @@ local function createProposalRow(
 	title.Position = UDim2.fromOffset(28, 8)
 	title.Size = UDim2.new(1, -56, 0, 20)
 	title.Text = compactLine(proposal.title or proposal.message)
-	title.TextColor3 = palette.text
-	title.TextSize = 13
+	title.TextColor3 = palette.title
+	title.TextSize = 14
 	title.TextTruncate = Enum.TextTruncate.AtEnd
 	title.TextWrapped = false
 	title.TextXAlignment = Enum.TextXAlignment.Left
@@ -420,103 +442,211 @@ local function createProposalRow(
 	row.MouseButton1Click:Connect(function() onOpen(proposal.id) end)
 end
 
-local function createDiff(parent: Instance, palette: Palette, file: Api.ProposalFile, order: number)
-	local lineCount = 0
+local function changeCounts(file: Api.ProposalFile): (number, number)
+	local additions = 0
+	local deletions = 0
 	for _, hunk in file.patch.hunks do
-		lineCount += #hunk.lines + 1
-	end
-	local frame = Instance.new("Frame")
-	frame.Name = "ScriptDiff"
-	frame.BackgroundColor3 = Color3.fromRGB(31, 41, 56)
-	frame.ClipsDescendants = true
-	frame.LayoutOrder = order
-	frame.Size = UDim2.new(1, 0, 0, 39 + lineCount * 21)
-	addCorner(frame, 7)
-	addStroke(frame, palette.border)
-	frame.Parent = parent
-
-	local filename = Instance.new("TextLabel")
-	filename.BackgroundColor3 = Color3.fromRGB(42, 54, 73)
-	filename.BorderSizePixel = 0
-	filename.Font = MONO
-	filename.Position = UDim2.fromOffset(0, 0)
-	filename.Size = UDim2.new(1, 0, 0, 34)
-	filename.Text = "  " .. file.path
-	filename.TextColor3 = Color3.fromRGB(190, 204, 226)
-	filename.TextSize = 10
-	filename.TextTruncate = Enum.TextTruncate.AtEnd
-	filename.TextXAlignment = Enum.TextXAlignment.Left
-	filename.Parent = frame
-
-	local y = 34
-	for _, hunk in file.patch.hunks do
-		local hunkTitle = Instance.new("TextLabel")
-		hunkTitle.BackgroundColor3 = Color3.fromRGB(42, 54, 73)
-		hunkTitle.BorderSizePixel = 0
-		hunkTitle.Font = FONT_MEDIUM
-		hunkTitle.Position = UDim2.fromOffset(0, y)
-		hunkTitle.Size = UDim2.new(1, 0, 0, 21)
-		hunkTitle.Text =
-			string.format("  Hunk · Lines %d–%d", hunk.oldStart, hunk.oldStart + math.max(0, hunk.oldLines - 1))
-		hunkTitle.TextColor3 = Color3.fromRGB(151, 171, 203)
-		hunkTitle.TextSize = 10
-		hunkTitle.TextXAlignment = Enum.TextXAlignment.Left
-		hunkTitle.Parent = frame
-		y += 21
-
-		local oldLine = hunk.oldStart
-		local newLine = hunk.newStart
 		for _, rawLine in hunk.lines do
-			if rawLine == "\\ No newline at end of file" then continue end
 			local prefix = string.sub(rawLine, 1, 1)
-			local codeText = string.sub(rawLine, 2)
-			local row = Instance.new("Frame")
-			row.BorderSizePixel = 0
-			row.Position = UDim2.fromOffset(0, y)
-			row.Size = UDim2.new(1, 0, 0, 21)
-			if prefix == "-" then
-				row.BackgroundColor3 = Color3.fromRGB(102, 48, 52)
-			elseif prefix == "+" then
-				row.BackgroundColor3 = Color3.fromRGB(5, 91, 94)
-			else
-				row.BackgroundTransparency = 1
+			if prefix == "+" then
+				additions += 1
+			elseif prefix == "-" then
+				deletions += 1
 			end
-			row.Parent = frame
-
-			local oldNumber = if prefix == "+" then "" else tostring(oldLine)
-			local newNumber = if prefix == "-" then "" else tostring(newLine)
-			if prefix ~= "+" then
-				oldLine += 1
-			end
-			if prefix ~= "-" then
-				newLine += 1
-			end
-
-			local numbers = Instance.new("TextLabel")
-			numbers.BackgroundTransparency = 1
-			numbers.Font = MONO
-			numbers.Size = UDim2.fromOffset(58, 21)
-			numbers.Text = string.format("%3s %3s", oldNumber, newNumber)
-			numbers.TextColor3 = Color3.fromRGB(108, 128, 159)
-			numbers.TextSize = 9
-			numbers.Parent = row
-
-			local code = Instance.new("TextLabel")
-			code.BackgroundTransparency = 1
-			code.Font = MONO
-			code.Position = UDim2.fromOffset(64, 0)
-			code.Size = UDim2.new(1, -68, 0, 21)
-			code.Text = (if prefix == " " then "  " else prefix .. " ") .. codeText
-			code.TextColor3 = if prefix == "-"
-				then Color3.fromRGB(255, 171, 149)
-				elseif prefix == "+" then Color3.fromRGB(73, 205, 158)
-				else Color3.fromRGB(236, 240, 247)
-			code.TextSize = 10
-			code.TextTruncate = Enum.TextTruncate.AtEnd
-			code.TextXAlignment = Enum.TextXAlignment.Left
-			code.Parent = row
-			y += 21
 		end
+	end
+	return additions, deletions
+end
+
+local function richTextEscape(text: string): string
+	return string.gsub(string.gsub(string.gsub(text, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
+end
+
+local function scriptTitle(path: string): string return string.match(path, "([^.]+)$") or path end
+
+local function trim(text: string): string return string.gsub(string.gsub(text, "^%s+", ""), "%s+$", "") end
+
+local function issueAndFix(summary: string, bugMessage: string): (string, string)
+	local issuePrefix = "Issue:"
+	local fixMarker = "\n\nFix:"
+	if string.sub(summary, 1, #issuePrefix) == issuePrefix then
+		local markerStart = string.find(summary, fixMarker, 1, true)
+		if markerStart then
+			return trim(string.sub(summary, #issuePrefix + 1, markerStart - 1)),
+				trim(string.sub(summary, markerStart + #fixMarker))
+		end
+	end
+	local rootPrefix = "Root cause:"
+	if string.sub(summary, 1, #rootPrefix) == rootPrefix then
+		local paragraph = string.find(summary, "\n\n", 1, true)
+		if paragraph then
+			return trim(string.sub(summary, #rootPrefix + 1, paragraph - 1)), trim(string.sub(summary, paragraph + 2))
+		end
+		return trim(string.sub(summary, #rootPrefix + 1)), "Review the proposed script diff for the exact correction."
+	end
+	return bugMessage, summary
+end
+
+local function createIssueFix(parent: Instance, palette: Palette, summary: string, bugMessage: string, order: number)
+	local issue, fix = issueAndFix(summary, bugMessage)
+	local group = Instance.new("Frame")
+	group.AutomaticSize = Enum.AutomaticSize.Y
+	group.BackgroundTransparency = 1
+	group.LayoutOrder = order
+	group.Size = UDim2.new(1, 0, 0, 0)
+	group.Parent = parent
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 4)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = group
+	createLabel(group, "Issue", 11, palette.title, FONT_MEDIUM, 10)
+	createLabel(group, issue, 11, palette.muted, FONT, 20)
+	createSpacer(group, 4, 30)
+	createLabel(group, "Fix", 11, palette.title, FONT_MEDIUM, 40)
+	createLabel(group, fix, 11, palette.muted, FONT, 50)
+end
+
+local function displayTimestamp(value: string): string
+	local date, time = string.match(value, "^(%d%d%d%d%-%d%d%-%d%d)T(%d%d:%d%d)")
+	if date and time then return date .. " · " .. time .. " UTC" end
+	return value
+end
+
+local function createTabs(parent: Instance, palette: Palette, active: "requests" | "history", callbacks: Callbacks)
+	local tabs = Instance.new("Frame")
+	tabs.BackgroundTransparency = 1
+	tabs.LayoutOrder = 15
+	tabs.Size = UDim2.new(1, 0, 0, 38)
+	tabs.Parent = parent
+
+	local function tab(text: string, key: "requests" | "history", x: number, width: number, onClick: () -> ())
+		local selected = active == key
+		local control = Instance.new("TextButton")
+		control.AutoButtonColor = false
+		control.BackgroundColor3 = if selected then palette.raised else palette.main
+		control.Font = FONT_MEDIUM
+		control.Position = UDim2.fromOffset(x, 0)
+		control.Size = UDim2.fromOffset(width, 36)
+		control.Text = text
+		control.TextColor3 = if selected then palette.title else palette.muted
+		control.TextSize = 12
+		addCorner(control, 7)
+		if selected then addStroke(control, palette.border) end
+		control.MouseEnter:Connect(function()
+			if not selected then control.TextColor3 = palette.text end
+		end)
+		control.MouseLeave:Connect(function()
+			if not selected then control.TextColor3 = palette.muted end
+		end)
+		control.MouseButton1Click:Connect(onClick)
+		control.Parent = tabs
+	end
+
+	tab("Fix requests", "requests", 0, 112, callbacks.onShowRequests)
+	tab("History", "history", 120, 82, callbacks.onShowHistory)
+end
+
+local function createChangedFileList(
+	parent: Instance,
+	palette: Palette,
+	proposal: ProposalDetail,
+	order: number,
+	onOpen: (number) -> ()
+)
+	local rowBackground = Color3.fromRGB(16, 16, 20)
+	local rowForeground = Color3.fromRGB(193, 196, 208)
+	local additionsColor = Color3.fromRGB(35, 232, 108)
+	local deletionsColor = Color3.fromRGB(255, 92, 105)
+	local heading = createLabel(
+		parent,
+		string.format("Changed scripts  %d", #proposal.files),
+		12,
+		rowForeground,
+		FONT_MEDIUM,
+		order
+	)
+	heading.Size = UDim2.new(1, 0, 0, 20)
+
+	local list = Instance.new("Frame")
+	list.Name = "ChangedScripts"
+	list.AutomaticSize = Enum.AutomaticSize.Y
+	list.BackgroundTransparency = 1
+	list.ClipsDescendants = true
+	list.LayoutOrder = order + 1
+	list.Size = UDim2.new(1, 0, 0, 0)
+	list.Parent = parent
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 4)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	for index, file in proposal.files do
+		local additions, deletions = changeCounts(file)
+		local row = Instance.new("TextButton")
+		row.Name = file.path
+		row.AutoButtonColor = false
+		row.BackgroundColor3 = rowBackground
+		row.BorderSizePixel = 0
+		row.LayoutOrder = index
+		row.Size = UDim2.new(1, 0, 0, 46)
+		row.Text = ""
+		addCorner(row, 5)
+		row.Parent = list
+
+		local icon = Instance.new("ImageLabel")
+		icon.BackgroundTransparency = 1
+		icon.Image = "rbxassetid://9405930424"
+		icon.ImageColor3 = rowForeground
+		icon.Position = UDim2.fromOffset(13, 12)
+		icon.ScaleType = Enum.ScaleType.Fit
+		icon.Size = UDim2.fromOffset(22, 22)
+		icon.Parent = row
+
+		local titleText = richTextEscape(scriptTitle(file.path))
+		local title = Instance.new("TextLabel")
+		title.BackgroundTransparency = 1
+		title.Font = FONT_BOLD
+		title.Position = UDim2.fromOffset(48, 0)
+		title.RichText = true
+		title.Size = UDim2.new(1, -142, 1, 0)
+		title.Text = titleText
+		title.TextColor3 = rowForeground
+		title.TextSize = 14
+		title.TextTruncate = Enum.TextTruncate.AtEnd
+		title.TextXAlignment = Enum.TextXAlignment.Left
+		title.Parent = row
+
+		local added = Instance.new("TextLabel")
+		added.BackgroundTransparency = 1
+		added.Font = FONT_BOLD
+		added.Position = UDim2.new(1, -94, 0, 0)
+		added.Size = UDim2.fromOffset(38, 46)
+		added.Text = "+" .. tostring(additions)
+		added.TextColor3 = additionsColor
+		added.TextSize = 15
+		added.TextXAlignment = Enum.TextXAlignment.Right
+		added.Parent = row
+
+		local deleted = Instance.new("TextLabel")
+		deleted.BackgroundTransparency = 1
+		deleted.Font = FONT_BOLD
+		deleted.Position = UDim2.new(1, -50, 0, 0)
+		deleted.Size = UDim2.fromOffset(38, 46)
+		deleted.Text = "−" .. tostring(deletions)
+		deleted.TextColor3 = deletionsColor
+		deleted.TextSize = 15
+		deleted.TextXAlignment = Enum.TextXAlignment.Right
+		deleted.Parent = row
+
+		row.MouseEnter:Connect(function()
+			row.BackgroundColor3 = rowBackground:Lerp(rowForeground, 0.06)
+			title.Text = "<u>" .. titleText .. "</u>"
+		end)
+		row.MouseLeave:Connect(function()
+			row.BackgroundColor3 = rowBackground
+			title.Text = titleText
+		end)
+		row.MouseButton1Click:Connect(function() onOpen(index) end)
 	end
 end
 
@@ -553,6 +683,11 @@ function Widget.new(plugin: Plugin, callbacks: Callbacks, logoImage: string)
 	local self = setmetatable({
 		callbacks = callbacks,
 		content = content,
+		diffViewer = DiffViewer.new(plugin, {
+			onAccept = callbacks.onAccept,
+			onReject = callbacks.onReject,
+			onRetry = callbacks.onRetry,
+		}),
 		dockWidget = dockWidget,
 		logoImage = logoImage,
 		state = {
@@ -574,6 +709,7 @@ end
 
 function Widget:setState(state: ViewState)
 	self.state = state
+	if state.kind ~= "detail" then self.diffViewer:hide() end
 	self:_render()
 end
 
@@ -718,6 +854,7 @@ function Widget:_renderReviews(palette: Palette)
 	disconnect.TextSize = 10
 	disconnect.Parent = connected
 	disconnect.MouseButton1Click:Connect(self.callbacks.onDisconnect)
+	createTabs(self.content, palette, "requests", self.callbacks)
 
 	local heading = Instance.new("Frame")
 	heading.BackgroundTransparency = 1
@@ -815,7 +952,7 @@ function Widget:_renderReviews(palette: Palette)
 	local requestList = Instance.new("Frame")
 	requestList.Name = "FixRequestList"
 	requestList.AutomaticSize = Enum.AutomaticSize.Y
-	requestList.BackgroundColor3 = palette.raised
+	requestList.BackgroundColor3 = palette.main
 	requestList.ClipsDescendants = true
 	requestList.LayoutOrder = 50
 	requestList.Size = UDim2.new(1, 0, 0, 0)
@@ -840,6 +977,177 @@ function Widget:_renderReviews(palette: Palette)
 	end
 end
 
+function Widget:_renderHistory(palette: Palette)
+	local connected = Instance.new("Frame")
+	connected.BackgroundColor3 = palette.raised
+	connected.LayoutOrder = 10
+	connected.Size = UDim2.new(1, 0, 0, 32)
+	addCorner(connected, 7)
+	addStroke(connected, palette.success:Lerp(palette.main, 0.68))
+	connected.Parent = self.content
+
+	local connectedText = Instance.new("TextLabel")
+	connectedText.BackgroundTransparency = 1
+	connectedText.Font = FONT
+	connectedText.Position = UDim2.fromOffset(10, 0)
+	connectedText.Size = UDim2.new(1, -100, 1, 0)
+	connectedText.Text = "✓  " .. (self.state.projectName or "Connected to Trace")
+	connectedText.TextColor3 = palette.success
+	connectedText.TextSize = 11
+	connectedText.TextTruncate = Enum.TextTruncate.AtEnd
+	connectedText.TextXAlignment = Enum.TextXAlignment.Left
+	connectedText.Parent = connected
+
+	local disconnect = Instance.new("TextButton")
+	disconnect.BackgroundTransparency = 1
+	disconnect.Font = FONT_MEDIUM
+	disconnect.Position = UDim2.new(1, -86, 0, 0)
+	disconnect.Size = UDim2.fromOffset(76, 32)
+	disconnect.Text = "Disconnect"
+	disconnect.TextColor3 = palette.muted
+	disconnect.TextSize = 10
+	disconnect.Parent = connected
+	disconnect.MouseButton1Click:Connect(self.callbacks.onDisconnect)
+	createTabs(self.content, palette, "history", self.callbacks)
+
+	local heading = Instance.new("Frame")
+	heading.BackgroundTransparency = 1
+	heading.LayoutOrder = 20
+	heading.Size = UDim2.new(1, 0, 0, 42)
+	heading.Parent = self.content
+	local title = Instance.new("TextLabel")
+	title.BackgroundTransparency = 1
+	title.Font = FONT_MEDIUM
+	title.Size = UDim2.new(1, -72, 0, 22)
+	title.Text = "Change history"
+	title.TextColor3 = palette.text
+	title.TextSize = 18
+	title.TextXAlignment = Enum.TextXAlignment.Left
+	title.Parent = heading
+	local subtitle = title:Clone() :: TextLabel
+	subtitle.Font = FONT
+	subtitle.Position = UDim2.fromOffset(0, 24)
+	subtitle.Size = UDim2.new(1, -72, 0, 16)
+	subtitle.Text = "Shared across this game · saved for 7 days"
+	subtitle.TextColor3 = palette.muted
+	subtitle.TextSize = 10
+	subtitle.Parent = heading
+	local refresh = Instance.new("TextButton")
+	refresh.BackgroundColor3 = palette.button
+	refresh.Font = FONT_MEDIUM
+	refresh.Position = UDim2.new(1, -64, 0, 1)
+	refresh.Size = UDim2.fromOffset(64, 32)
+	refresh.Text = "Refresh"
+	refresh.TextColor3 = palette.text
+	refresh.TextSize = 10
+	addCorner(refresh, 7)
+	addStroke(refresh, palette.border)
+	refresh.Parent = heading
+	refresh.MouseButton1Click:Connect(self.callbacks.onRefreshHistory)
+
+	if self.state.errorMessage then createMessage(self.content, palette, self.state.errorMessage, "error", 25) end
+	if self.state.notice then createMessage(self.content, palette, self.state.notice, "success", 26) end
+	local history = self.state.history
+	if not history then
+		createMessage(self.content, palette, "Loading saved script versions…", "info", 30)
+		return
+	end
+	if #history.entries == 0 then
+		createMessage(
+			self.content,
+			palette,
+			"No accepted fixes in the last 7 days. Saved script versions will appear here after a fix is applied.",
+			"info",
+			30
+		)
+		return
+	end
+
+	local list = Instance.new("Frame")
+	list.AutomaticSize = Enum.AutomaticSize.Y
+	list.BackgroundTransparency = 1
+	list.LayoutOrder = 40
+	list.Size = UDim2.new(1, 0, 0, 0)
+	list.Parent = self.content
+	local layout = Instance.new("UIListLayout")
+	layout.Padding = UDim.new(0, 8)
+	layout.SortOrder = Enum.SortOrder.LayoutOrder
+	layout.Parent = list
+
+	for index, entry in history.entries do
+		local row = Instance.new("Frame")
+		row.BackgroundColor3 = palette.raised
+		row.LayoutOrder = index
+		row.Size = UDim2.new(1, 0, 0, 118)
+		addCorner(row, 8)
+		addStroke(row, palette.border)
+		row.Parent = list
+
+		local rowTitle = Instance.new("TextLabel")
+		rowTitle.BackgroundTransparency = 1
+		rowTitle.Font = FONT_MEDIUM
+		rowTitle.Position = UDim2.fromOffset(12, 10)
+		rowTitle.Size = UDim2.new(1, -24, 0, 20)
+		rowTitle.Text = entry.title or "Accepted autofix"
+		rowTitle.TextColor3 = palette.title
+		rowTitle.TextSize = 12
+		rowTitle.TextTruncate = Enum.TextTruncate.AtEnd
+		rowTitle.TextXAlignment = Enum.TextXAlignment.Left
+		rowTitle.Parent = row
+
+		local path = rowTitle:Clone() :: TextLabel
+		path.Font = MONO
+		path.Position = UDim2.fromOffset(12, 34)
+		path.Size = UDim2.new(1, -24, 0, 18)
+		path.Text = entry.path
+		path.TextColor3 = palette.text
+		path.TextSize = 10
+		path.Parent = row
+
+		local accepted = rowTitle:Clone() :: TextLabel
+		accepted.Font = FONT
+		accepted.Position = UDim2.fromOffset(12, 57)
+		accepted.Size = UDim2.new(1, -24, 0, 17)
+		accepted.Text = "Accepted by " .. entry.acceptedBy .. " · " .. displayTimestamp(entry.acceptedAt)
+		accepted.TextColor3 = palette.muted
+		accepted.TextSize = 10
+		accepted.Parent = row
+
+		if entry.restoredAt then
+			local restored = accepted:Clone() :: TextLabel
+			restored.Position = UDim2.fromOffset(12, 82)
+			restored.Size = UDim2.new(1, -24, 0, 24)
+			restored.Text = "Restored by " .. (entry.restoredBy or "a teammate")
+			restored.TextColor3 = palette.success
+			restored.Parent = row
+		else
+			local restore = Instance.new("TextButton")
+			restore.AutoButtonColor = false
+			restore.BackgroundColor3 = palette.button
+			restore.Font = FONT_MEDIUM
+			restore.Position = UDim2.fromOffset(12, 80)
+			restore.Size = UDim2.fromOffset(122, 28)
+			restore.Text = "Restore this script"
+			restore.TextColor3 = palette.text
+			restore.TextSize = 10
+			addCorner(restore, 6)
+			addStroke(restore, palette.border)
+			restore.MouseButton1Click:Connect(function()
+				ConfirmationModal.show(
+					self.dockWidget,
+					palette,
+					"Restore this script?",
+					entry.path
+						.. " will return to its version from before this fix. Trace will stop if the script has newer edits.",
+					"Restore script",
+					function() self.callbacks.onRestoreHistory(entry.id) end
+				)
+			end)
+			restore.Parent = row
+		end
+	end
+end
+
 function Widget:_renderDetail(palette: Palette)
 	local proposal = self.state.proposal
 	local back = createButton(self.content, "‹  Back to fix requests", "quiet", palette, 10)
@@ -852,7 +1160,7 @@ function Widget:_renderDetail(palette: Palette)
 
 	createPill(self.content, proposal.category, categoryColor(palette, proposal.category), 20)
 	createLabel(self.content, proposal.title or proposal.bug.message, 18, palette.text, FONT_MEDIUM, 30)
-	if proposal.summary then createLabel(self.content, proposal.summary, 11, palette.muted, FONT, 40) end
+	if proposal.summary then createIssueFix(self.content, palette, proposal.summary, proposal.bug.message, 40) end
 	if self.state.errorMessage then createMessage(self.content, palette, self.state.errorMessage, "error", 45) end
 	if self.state.notice then createMessage(self.content, palette, self.state.notice, "success", 46) end
 	if proposal.status == "queued" or proposal.status == "processing" then
@@ -903,10 +1211,15 @@ function Widget:_renderDetail(palette: Palette)
 		)
 	end
 
-	for index, file in proposal.files do
-		createDiff(self.content, palette, file, 50 + index)
-	end
-	if #proposal.files == 0 then
+	if #proposal.files > 0 then
+		createChangedFileList(
+			self.content,
+			palette,
+			proposal,
+			50,
+			function(fileIndex) self.diffViewer:show(proposal, fileIndex) end
+		)
+	else
 		createMessage(
 			self.content,
 			palette,
@@ -918,7 +1231,20 @@ function Widget:_renderDetail(palette: Palette)
 
 	if proposal.status == "ready" or proposal.status == "conflict" then
 		local accept = createButton(self.content, "Accept and apply changes", "primary", palette, 80)
-		accept.MouseButton1Click:Connect(function() self.callbacks.onAccept(proposal.id) end)
+		accept.MouseButton1Click:Connect(function()
+			ConfirmationModal.show(
+				self.dockWidget,
+				palette,
+				"Apply this fix?",
+				string.format(
+					"Trace will update %d script%s as one undoable Studio action. Review the changed-script list before continuing.",
+					#proposal.files,
+					if #proposal.files == 1 then "" else "s"
+				),
+				"Apply changes",
+				function() self.callbacks.onAccept(proposal.id) end
+			)
+		end)
 		local retry = createButton(self.content, "Regenerate root-cause fix", "secondary", palette, 85)
 		retry.MouseButton1Click:Connect(function() self.callbacks.onRetry(proposal.id) end)
 		local reject = createButton(self.content, "Reject proposal", "danger", palette, 90)
@@ -951,6 +1277,8 @@ function Widget:_render()
 		self:_renderCode(palette)
 	elseif self.state.kind == "reviews" then
 		self:_renderReviews(palette)
+	elseif self.state.kind == "history" then
+		self:_renderHistory(palette)
 	elseif self.state.kind == "detail" then
 		self:_renderDetail(palette)
 	end

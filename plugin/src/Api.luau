@@ -110,6 +110,39 @@ export type ProposalDetail = {
 	title: string?,
 }
 
+export type AppliedFile = {
+	appliedSource: string,
+	className: "Script" | "LocalScript" | "ModuleScript",
+	path: string,
+	previousSource: string,
+}
+
+export type HistoryEntry = {
+	acceptedAt: string,
+	acceptedBy: string,
+	className: "Script" | "LocalScript" | "ModuleScript",
+	expiresAt: string,
+	id: string,
+	path: string,
+	proposalId: string,
+	restoredAt: string?,
+	restoredBy: string?,
+	summary: string?,
+	title: string?,
+}
+
+export type HistoryList = {
+	entries: { HistoryEntry },
+	retentionDays: number,
+}
+
+export type HistoryDetail = HistoryEntry & {
+	appliedSha256: string,
+	appliedSource: string,
+	previousSha256: string,
+	previousSource: string,
+}
+
 type ApiErrorBody = {
 	error: {
 		code: string?,
@@ -236,16 +269,35 @@ function Api.getProposal(self: Client, token: string, proposalId: string): ApiRe
 	return self:_request("GET", "/v1/plugin-autofix/proposals/" .. HttpService:UrlEncode(proposalId), nil, token)
 end
 
+function Api.getHistory(self: Client, token: string): ApiResponse<HistoryList>
+	return self:_request("GET", "/v1/plugin-autofix/history", nil, token)
+end
+
+function Api.getHistoryEntry(self: Client, token: string, historyId: string): ApiResponse<HistoryDetail>
+	return self:_request("GET", "/v1/plugin-autofix/history/" .. HttpService:UrlEncode(historyId), nil, token)
+end
+
+function Api.markHistoryRestored(self: Client, token: string, historyId: string): ApiResponse<any>
+	return self:_request(
+		"POST",
+		"/v1/plugin-autofix/history/" .. HttpService:UrlEncode(historyId) .. "/restored",
+		nil,
+		token
+	)
+end
+
 function Api.reviewProposal(
 	self: Client,
 	token: string,
 	proposalId: string,
 	action: "accepted" | "rejected" | "conflict" | "retry",
-	message: string?
+	message: string?,
+	appliedFiles: { AppliedFile }?
 ): ApiResponse<any>
 	return self:_request("POST", "/v1/plugin-autofix/proposals/" .. HttpService:UrlEncode(proposalId) .. "/review", {
 		action = action,
 		message = message,
+		appliedFiles = appliedFiles,
 	}, token)
 end
 
