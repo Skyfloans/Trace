@@ -15,6 +15,7 @@ import {
   iso,
   parseCsvEnum,
   parseTimeRange,
+  RAW_RETENTION_MS,
   ReadApiError,
   severitySchema,
   sideSchema,
@@ -335,6 +336,7 @@ export async function registerSessionAndLogRoutes(
       const time = parseTimeRange(
         typeof query.from === "string" ? query.from : undefined,
         typeof query.to === "string" ? query.to : undefined,
+        RAW_RETENTION_MS,
       );
       const limit = clampLimit(
         query.limit as string | undefined,

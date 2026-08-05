@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const RAW_RETENTION_MS = 3 * 24 * 60 * 60 * 1_000;
+const DEFAULT_RAW_QUERY_RANGE_MS = 24 * 60 * 60 * 1_000;
+
 export const severitySchema = z.enum(["trace", "info", "warning", "error"]);
 export const sideSchema = z.enum(["client", "server"]);
 export const errorAICategorySchema = z.enum([
@@ -55,11 +58,12 @@ export function parseCsvEnum<T extends string>(
 export function parseTimeRange(
   from: string | undefined,
   to: string | undefined,
+  defaultRangeMs = DEFAULT_RAW_QUERY_RANGE_MS,
 ): { from: Date; to: Date } {
   const parsedTo = to ? new Date(to) : new Date();
   const parsedFrom = from
     ? new Date(from)
-    : new Date(parsedTo.getTime() - 24 * 60 * 60 * 1_000);
+    : new Date(parsedTo.getTime() - defaultRangeMs);
 
   if (
     Number.isNaN(parsedFrom.getTime()) ||
@@ -73,7 +77,7 @@ export function parseTimeRange(
     );
   }
 
-  if (parsedTo.getTime() - parsedFrom.getTime() > 3 * 24 * 60 * 60 * 1_000) {
+  if (parsedTo.getTime() - parsedFrom.getTime() > RAW_RETENTION_MS) {
     throw new ReadApiError(
       400,
       "time_range_too_large",

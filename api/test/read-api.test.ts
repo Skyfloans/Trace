@@ -902,6 +902,46 @@ test("player search keeps username, display name, and numeric ID filters indexab
   await app.close();
 });
 
+test("player session history defaults to the full retention window", async () => {
+  let sessionValues: unknown[] = [];
+  const pool = {
+    query: async (sql: string, values?: unknown[]) => {
+      if (sql.includes("FROM web_sessions")) {
+        return {
+          rows: [{
+            id: "10000000-0000-4000-8000-000000000001",
+            email: "member@example.com",
+            name: "Member",
+          }],
+          rowCount: 1,
+        };
+      }
+      if (sql.includes("FROM project_memberships")) {
+        return { rows: [{ exists: 1 }], rowCount: 1 };
+      }
+      if (sql.includes("FROM sessions s") && sql.includes("JOIN jobs j")) {
+        sessionValues = values ?? [];
+        return { rows: [], rowCount: 0 };
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  } as unknown as Pool;
+  const app = await buildApp(pool);
+
+  const response = await app.inject({
+    method: "GET",
+    url: "/v1/projects/20000000-0000-4000-8000-000000000001/players/123/sessions?limit=25",
+    headers: { authorization: `Bearer ${"x".repeat(40)}` },
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.equal(sessionValues.length, 5);
+  const to = sessionValues[2] as Date;
+  const from = sessionValues[3] as Date;
+  assert.equal(to.getTime() - from.getTime(), 3 * 24 * 60 * 60 * 1_000);
+  await app.close();
+});
+
 test("grouped logs bound candidate groups before calculating exact statistics", async () => {
   let groupsSql = "";
   const pool = {
