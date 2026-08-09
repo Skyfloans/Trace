@@ -33,13 +33,13 @@ const INGESTION_DOMAIN = 'api.tracestack.gg'
 const ROBLOX_PACKAGE_URL = 'https://create.roblox.com/store/asset/124815376245922/Trace'
 const SERVER_BOOTSTRAP = `local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Trace = ReplicatedStorage.Trace
 local Server = require(Trace.Server.Main)
 
 Server.Start()`
 const CLIENT_BOOTSTRAP = `local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Trace = ReplicatedStorage.Trace
 local Client = require(Trace.Client.Main)
 
 Client.Start()`

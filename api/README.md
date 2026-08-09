@@ -364,7 +364,7 @@ create this `Script` in `ServerScriptService`:
 
 ```luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Trace = ReplicatedStorage.Trace
 
 local Server = require(Trace.Server.Main)
 Server.Start()
@@ -374,7 +374,7 @@ Create this `LocalScript` in `StarterPlayerScripts`:
 
 ```luau
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Trace = ReplicatedStorage.Trace
 
 local Client = require(Trace.Client.Main)
 Client.Start()

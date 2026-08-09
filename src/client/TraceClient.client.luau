@@ -1,6 +1,6 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Trace = ReplicatedStorage.Trace
 local Client = require(Trace.Client.Main)
 
 Client.Start()
