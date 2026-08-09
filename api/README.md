@@ -336,13 +336,13 @@ alone. Small individual events should not be sent as separate requests.
 
 ## Roblox configuration
 
-For local Studio testing, `src/server/TraceServer/LocalConfig.luau` contains the
+For local Studio testing, `src/ReplicatedStorage/Trace/Server/LocalConfig.luau` contains the
 local endpoint and development key. This file is gitignored.
 
 Before publishing:
 
 1. Deploy the ingestion API over HTTPS at `https://api.tracestack.gg`.
-2. Confirm `Endpoint` in `src/server/TraceServer/Config.luau` uses that origin.
+2. Confirm `Endpoint` in `src/ReplicatedStorage/Trace/Server/Config.luau` uses that origin.
 3. Add the ingestion key to the Roblox experience Secrets Store with the name
    `TraceKey`.
 4. Restrict the secret's allowed domain to `api.tracestack.gg`.
@@ -358,6 +358,30 @@ rojo build distribution.project.json -o Trace.rbxm
 
 Do not build the public model from `default.project.json`; the development
 project can see ignored Studio-only files such as `LocalConfig.luau`.
+
+The public model is one `Trace` folder. Place it in `ReplicatedStorage`, then
+create this `Script` in `ServerScriptService`:
+
+```luau
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Trace = ReplicatedStorage:WaitForChild("Trace")
+
+local Server = require(Trace.Server.Main)
+Server.Start()
+```
+
+Create this `LocalScript` in `StarterPlayerScripts`:
+
+```luau
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local Trace = ReplicatedStorage:WaitForChild("Trace")
+
+local Client = require(Trace.Client.Main)
+Client.Start()
+```
+
+Those bootstrap scripts remain stable. Updating the SDK only requires replacing
+the `ReplicatedStorage.Trace` folder.
 
 `Config.luau` exposes the main per-game cost controls:
 

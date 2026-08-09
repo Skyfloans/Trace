@@ -2095,11 +2095,40 @@ kbd {
 .installation-checklist ol { margin: 0; padding: 0; list-style: none; counter-reset: install-step; }
 .installation-checklist li { min-height: 76px; display: grid; grid-template-columns: 28px minmax(150px, .48fr) minmax(240px, 1fr); align-items: start; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--line-soft); counter-increment: install-step; }
 .installation-checklist li::before { content: counter(install-step); width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--radius-sm); color: var(--muted); background: var(--surface); font-size: 11px; font-weight: 700; }
-.installation-checklist li strong { padding-top: 3px; font-size: 13px; }
-.installation-checklist li span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.installation-checklist li > strong { padding-top: 3px; font-size: 13px; }
+.installation-checklist li > span,
+.install-step-body { min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.install-step-body > p { margin: 0; }
 .installation-checklist code { color: #c8d3da; }
-.inline-install-action { width: fit-content; min-height: 44px; display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink); background: var(--surface); font-weight: 650; line-height: 1.2; text-decoration: none; }
+.install-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.inline-install-action { width: fit-content; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 0 14px; border: 1px solid var(--line); border-radius: var(--radius-md); color: var(--ink); background: var(--surface); font-weight: 650; line-height: 1.2; text-decoration: none; }
 .inline-install-action:hover { border-color: #455866; background: var(--surface-raised); }
+.inline-install-action.primary { border-color: var(--accent); color: #161d23; background: var(--accent); }
+.inline-install-action.primary:hover { border-color: #f08c79; background: #f08c79; }
+.inline-install-action:focus-visible,
+.bootstrap-snippet summary:focus-visible,
+.bootstrap-code button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.bootstrap-snippets { display: grid; gap: 8px; margin-top: 12px; }
+.bootstrap-snippet { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--surface); overflow: hidden; }
+.bootstrap-snippet summary { min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; color: var(--ink); cursor: pointer; list-style: none; }
+.bootstrap-snippet summary::-webkit-details-marker { display: none; }
+.bootstrap-snippet summary:hover { background: var(--surface-raised); }
+.bootstrap-snippet-label { min-width: 0; display: flex; align-items: center; gap: 10px; }
+.bootstrap-snippet-label > svg { flex: 0 0 auto; color: var(--accent); }
+.bootstrap-snippet-label > span { min-width: 0; }
+.bootstrap-snippet-label b,
+.bootstrap-snippet-label small { display: block; }
+.bootstrap-snippet-label b { color: var(--ink); font-size: 12px; line-height: 1.3; }
+.bootstrap-snippet-label small { margin-top: 2px; overflow: hidden; color: var(--muted); font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.bootstrap-chevron { flex: 0 0 auto; color: var(--muted); transition: transform 180ms var(--ease); }
+.bootstrap-snippet[open] .bootstrap-chevron { transform: rotate(90deg); }
+.bootstrap-code { border-top: 1px solid var(--line); background: #0b1219; }
+.bootstrap-code > div { min-height: 38px; display: flex; align-items: center; justify-content: space-between; padding: 0 8px 0 13px; border-bottom: 1px solid #25323d; }
+.bootstrap-code > div > span { color: #8797a3; font: 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.bootstrap-code button { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border: 0; border-radius: var(--radius-sm); color: #c8d3da; background: transparent; font-size: 11px; font-weight: 650; }
+.bootstrap-code button:hover { color: var(--ink); background: #18232d; }
+.bootstrap-code pre { margin: 0; padding: 13px; overflow-x: auto; }
+.bootstrap-code pre code { color: #d9e4ea; font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
 
 .mobile-nav { display: none; }
 
@@ -2352,7 +2381,10 @@ kbd {
   .invite-form > .primary-button { grid-column: auto; width: 100%; }
   .installation-checklist { padding: 22px 16px 24px; }
   .installation-checklist li { grid-template-columns: 28px 1fr; padding: 10px 0; }
-  .installation-checklist li span { grid-column: 2; }
+  .installation-checklist li > span,
+  .installation-checklist .install-step-body { grid-column: 2; }
+  .install-actions { flex-direction: column; }
+  .inline-install-action { width: 100%; justify-content: center; }
 }
 
 @media (pointer: coarse) {

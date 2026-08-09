@@ -90,9 +90,24 @@ test("extracts scripts and full paths from a real binary Roblox model", async ()
 
   assert.ok(scripts.length >= 8);
   assert.ok(scripts.some((script) =>
-    script.path === "TRACE.ReplicatedStorage.TraceShared.LogCollector" &&
+    script.path === "Trace.Shared.LogCollector" &&
     script.className === "ModuleScript" &&
     script.source.includes("LogCollector")
+  ));
+  assert.ok(scripts.some((script) =>
+    script.path === "Trace.Server.Main" &&
+    script.className === "ModuleScript" &&
+    script.source.includes("function Server.Start()")
+  ));
+  assert.ok(scripts.some((script) =>
+    script.path === "Trace.Client.Main" &&
+    script.className === "ModuleScript" &&
+    script.source.includes("function Client.Start()")
+  ));
+  assert.ok(!scripts.some((script) =>
+    script.path.startsWith("Trace.ReplicatedStorage.") ||
+    script.path.startsWith("Trace.ServerScriptService.") ||
+    script.path.startsWith("Trace.StarterPlayerScripts.")
   ));
 });
 

@@ -43,9 +43,9 @@ Main areas:
 ```text
 api/                         Fastify + TypeScript API
 database/migrations/         PostgreSQL migrations
-src/server/TraceServer/      Roblox server SDK
-src/client/                  Roblox client SDK
-src/ReplicatedStorage/       Shared Roblox modules
+src/ReplicatedStorage/Trace/ Single-folder Roblox SDK package
+src/server/                  Thin Roblox server bootstrap
+src/client/                  Thin Roblox client bootstrap
 default.project.json         Rojo project mapping
 docker-compose.yml           Local PostgreSQL
 ```
@@ -180,7 +180,7 @@ api.tracestack.gg
 
 Roblox must also have **Allow HTTP Requests** enabled.
 
-`src/server/TraceServer/LocalConfig.luau` is gitignored and contains local
+`src/ReplicatedStorage/Trace/Server/LocalConfig.luau` is gitignored and contains local
 development settings. Never commit or print its key. Live servers do not load
 `LocalConfig`; it is only checked when `RunService:IsStudio()`.
 
@@ -199,7 +199,7 @@ M  api/src/read/auth.ts
 M  api/src/read/index.ts
 M  api/src/read/sessions-logs.ts
 M  api/test/read-api.test.ts
-M  src/server/TraceServer/Config.luau
+M  src/ReplicatedStorage/Trace/Server/Config.luau
 ?? api/src/read/roblox.ts
 ?? .codex/
 ```
@@ -356,7 +356,7 @@ The ingestion API rejects events:
 ### Shared protocol
 
 ```text
-src/ReplicatedStorage/TraceShared/Protocol.luau
+src/ReplicatedStorage/Trace/Shared/Protocol.luau
 ```
 
 Important limits:
@@ -372,7 +372,7 @@ Client rate limit: 30 events per 10 seconds per player
 ### Client
 
 ```text
-src/client/TraceClient.client.luau
+src/ReplicatedStorage/Trace/Client/Main.luau
 ```
 
 The client:
@@ -389,7 +389,7 @@ Clients do not call the external API directly.
 ### Server
 
 ```text
-src/server/TraceServer/init.server.luau
+src/ReplicatedStorage/Trace/Server/Main.luau
 ```
 
 The server:
@@ -407,7 +407,7 @@ The server:
 ### Batcher
 
 ```text
-src/server/TraceServer/Batcher.luau
+src/ReplicatedStorage/Trace/Server/Batcher.luau
 ```
 
 Current behavior:
@@ -901,7 +901,7 @@ will be rejected.
 Never commit or print:
 
 - `api/.env`
-- `src/server/TraceServer/LocalConfig.luau`
+- `src/ReplicatedStorage/Trace/Server/LocalConfig.luau`
 - Any `tr_ingest_...` key
 - Any temporary read token
 - Neon connection strings

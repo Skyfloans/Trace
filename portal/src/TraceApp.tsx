@@ -30,6 +30,19 @@ type Resource<T> = {
 const RESOURCE_CACHE_MS = 30_000
 const RESOURCE_CACHE_LIMIT = 100
 const INGESTION_DOMAIN = 'api.tracestack.gg'
+const ROBLOX_PACKAGE_URL = 'https://create.roblox.com/store/asset/124815376245922/Trace'
+const SERVER_BOOTSTRAP = `local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Server = require(Trace.Server.Main)
+
+Server.Start()`
+const CLIENT_BOOTSTRAP = `local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Trace = ReplicatedStorage:WaitForChild("Trace")
+local Client = require(Trace.Client.Main)
+
+Client.Start()`
 const NAV_PATHS: Record<NavPage, string> = {
   overview: '/dashboard',
   players: '/players',
@@ -1553,11 +1566,12 @@ function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { pro
     </section> : joinedProjects.length === 0 && <PageStatus compact title="No team access" copy={incomingInvitations.data?.data.length ? 'Accept an invitation above to join a game.' : 'Join a game through an invitation to manage your team access here.'} />)}
 
     {view === 'games' && <section className="installation-checklist" aria-labelledby="installation-title">
-      <div><span className="setup-step">Roblox install</span><h2 id="installation-title">Install Trace in Studio</h2><p>Download the model once, then add each game’s individual secret.</p></div>
+      <div><span className="setup-step">Roblox install</span><h2 id="installation-title">Install Trace in Studio</h2><p>Download the linked package once, then keep every game current through Roblox package updates.</p></div>
       <ol>
         <li><strong>Add the secret</strong><span>Use <b>Manage Secrets</b> beside the game. Create <code>TraceKey</code>, paste its one-time key, and set the domain to <code>{INGESTION_DOMAIN}</code>. Rotate the key if it was not saved.</span></li>
-        <li><strong>Download Trace</strong><span>Download the ready-to-import Roblox model. No file syncing is required.<a className="inline-install-action" href="/Trace.rbxm" download="Trace.rbxm"><Download size={14} aria-hidden="true" />Download Trace.rbxm</a></span></li>
-        <li><strong>Install and publish</strong><span>Drag <code>Trace.rbxm</code> into Roblox Studio, keep its included service structure, enable HTTP requests, and publish.</span></li>
+        <li><strong>Install the package</strong><div className="install-step-body"><p>Download <code>Trace.rbxm</code> and drag it into <code>ReplicatedStorage</code> in Studio. The file is linked to the official Trace package, so future versions remain available through Roblox package updates.</p><div className="install-actions"><a className="inline-install-action primary" href="/Trace.rbxm" download="Trace.rbxm"><Download size={14} aria-hidden="true" />Download linked package</a><a className="inline-install-action" href={ROBLOX_PACKAGE_URL} target="_blank" rel="noreferrer">View on Roblox<ExternalLink size={14} aria-hidden="true" /></a></div></div></li>
+        <li><strong>Add the bootstrappers</strong><div className="install-step-body"><p>Create one server <code>Script</code> and one client <code>LocalScript</code>. These stay in place when the Trace package updates.</p><div className="bootstrap-snippets"><InstallCodeSnippet title="Server bootstrap" location="ServerScriptService · Script" code={SERVER_BOOTSTRAP} /><InstallCodeSnippet title="Client bootstrap" location="StarterPlayerScripts · LocalScript" code={CLIENT_BOOTSTRAP} /></div></div></li>
+        <li><strong>Enable and publish</strong><span>Turn on <b>Allow HTTP Requests</b> in Experience Settings → Security, publish the experience, and join a fresh server.</span></li>
         <li><strong>Confirm the first session</strong><span>Join a fresh server. Data should appear within the first transport window.</span></li>
       </ol>
     </section>}
@@ -1980,6 +1994,25 @@ function CopyBlock({ label, value, secret = false }: { label: string; value: str
   }
 
   return <div className={`copy-block ${secret ? 'secret-value' : ''}`}><span>{label}</span><code title={value}>{value}</code><button type="button" onClick={() => void copy()} aria-label={`Copy ${label.toLowerCase()}`}>{copied ? <Check size={15} aria-hidden="true" /> : <Copy size={15} aria-hidden="true" />}<span>{copied ? 'Copied' : 'Copy'}</span></button></div>
+}
+
+function InstallCodeSnippet({ title, location, code }: { title: string; location: string; code: string }) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(false), 1800)
+    return () => window.clearTimeout(timer)
+  }, [copied])
+
+  const copy = async () => {
+    await navigator.clipboard.writeText(code)
+    setCopied(true)
+  }
+
+  return <details className="bootstrap-snippet">
+    <summary><span className="bootstrap-snippet-label"><TerminalSquare size={16} aria-hidden="true" /><span><b>{title}</b><small>{location}</small></span></span><ChevronRight className="bootstrap-chevron" size={16} aria-hidden="true" /></summary>
+    <div className="bootstrap-code"><div><span>Luau</span><button type="button" onClick={() => void copy()} aria-label={`Copy ${title.toLowerCase()}`}>{copied ? <Check size={14} aria-hidden="true" /> : <Copy size={14} aria-hidden="true" />}{copied ? 'Copied' : 'Copy'}</button></div><pre><code>{code}</code></pre></div>
+  </details>
 }
 
 function GameRemovalDialog({ project, working, onCancel, onConfirm }: { project: ManagedProject; working: boolean; onCancel: () => void; onConfirm: () => void }) {

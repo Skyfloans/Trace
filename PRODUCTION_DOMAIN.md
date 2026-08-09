@@ -120,8 +120,9 @@ Do not use `*`. Keep **Allow HTTP Requests** enabled. Existing published games
 must also receive the SDK build whose endpoint is `https://api.tracestack.gg`;
 changing DNS does not rewrite code already published in Roblox.
 
-Build the downloadable SDK only from `distribution.project.json`. It explicitly
-excludes `LocalConfig.luau` and test scripts from the public model.
+Build the downloadable SDK only from `distribution.project.json`. It produces
+the single `Trace` package folder and explicitly excludes `LocalConfig.luau`
+and test scripts from the public model.
 
 ## Cutover verification
 

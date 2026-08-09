@@ -3,6 +3,7 @@
 *.rbxm
 *.rbxmx
 !portal/public/Trace.rbxm
+!src/ReplicatedStorage/Trace/Shared/FeedbackPrompt.rbxm
 *.tmp
 *.lock
 *.log
