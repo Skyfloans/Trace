@@ -87,6 +87,10 @@ BEGIN
         RAISE EXCEPTION 'days_ahead cannot be negative';
     END IF;
 
+    PERFORM pg_advisory_xact_lock(
+        hashtextextended('trace-occurrence-partitions', 0)
+    );
+
     FOR partition_date IN
         SELECT generate_series(
             (now() AT TIME ZONE 'UTC')::date - 3,
@@ -98,12 +102,14 @@ BEGIN
         range_start := partition_date::text || ' 00:00:00+00';
         range_end := (partition_date + 1)::text || ' 00:00:00+00';
 
-        EXECUTE format(
-            'CREATE TABLE IF NOT EXISTS %I PARTITION OF occurrences FOR VALUES FROM (%L) TO (%L)',
-            partition_name,
-            range_start,
-            range_end
-        );
+        IF to_regclass(format('%I.%I', current_schema(), partition_name)) IS NULL THEN
+            EXECUTE format(
+                'CREATE TABLE IF NOT EXISTS %I PARTITION OF occurrences FOR VALUES FROM (%L) TO (%L)',
+                partition_name,
+                range_start,
+                range_end
+            );
+        END IF;
     END LOOP;
 END;
 $$;

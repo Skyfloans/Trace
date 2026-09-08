@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
-import { withTransaction } from "./db.js";
+import { ensureOccurrencePartitions, withTransaction } from "./db.js";
 import { fingerprintEvent } from "./fingerprint.js";
 import type { IngestBatch, IngestEvent } from "./schema.js";
 
@@ -908,7 +908,7 @@ export async function ingestBatch(
 
     if (!missingOccurrencePartition) throw error;
 
-    await pool.query("SELECT ensure_occurrence_partitions(3)");
+    await ensureOccurrencePartitions(pool);
     return ingest();
   }
 }

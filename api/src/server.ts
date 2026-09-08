@@ -1,7 +1,11 @@
 import { createArchiveStorage } from "./archive-storage.js";
 import { buildApp } from "./app.js";
 import { config } from "./config.js";
-import { createPool, withTransaction } from "./db.js";
+import {
+  createPool,
+  ensureOccurrencePartitions,
+  withTransaction,
+} from "./db.js";
 import { archiveEligiblePartitions } from "./telemetry-archive.js";
 import { startAIClassificationWorker } from "./ai-classification.js";
 import {
@@ -57,7 +61,7 @@ let stopAutofixScheduler: (() => Promise<void>) | undefined;
 let stopAutofixWorker: (() => Promise<void>) | undefined;
 
 async function runMaintenance(): Promise<void> {
-  await ingestionPool.query("SELECT ensure_occurrence_partitions(3)");
+  await ensureOccurrencePartitions(ingestionPool);
   if (config.ARCHIVE_ENABLED) {
     if (!archiveStorage) {
       throw new Error("archive storage is enabled but not configured");
@@ -102,7 +106,7 @@ app.addHook("onClose", async () => {
 });
 
 try {
-  await ingestionPool.query("SELECT ensure_occurrence_partitions(3)");
+  await ensureOccurrencePartitions(ingestionPool);
 
   if (archiveStorage) {
     try {
