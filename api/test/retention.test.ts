@@ -8,6 +8,7 @@ interface FakeOptions {
   partitions?: Array<{ partition_name: string; past_aggregate_window: boolean }>;
   failWhen?: (text: string) => boolean;
   deleteCounts?: Record<string, number[]>;
+  onQuery?: (text: string) => void;
 }
 
 function fakePool({
@@ -15,11 +16,13 @@ function fakePool({
   partitions = [],
   failWhen = () => false,
   deleteCounts = {},
+  onQuery = () => undefined,
 }: FakeOptions = {}) {
   const queries: string[] = [];
   const client = {
     async query(text: string) {
       queries.push(text);
+      onQuery(text);
       if (failWhen(text)) throw new Error("canceling statement due to statement timeout");
       if (text.includes("pg_try_advisory_lock")) return { rows: [{ acquired: lockAcquired }] };
       if (text.includes("FROM pg_inherits")) return { rows: partitions };
@@ -118,4 +121,26 @@ test("each table stops at its own time budget", async () => {
 
   assert.ok((summary.deletedRows.display_error_rollups_hourly ?? 0) < 25);
   assert.equal(Object.keys(summary.deletedRows).length, retentionDeleteSteps.length);
+});
+
+test("slow partition rollups do not consume the delete budget", async () => {
+  let clock = 0;
+  const { pool } = fakePool({
+    partitions: [{ partition_name: "occurrences_2026_10_22", past_aggregate_window: false }],
+    deleteCounts: { sessions: [2, 1] },
+    onQuery: (text) => {
+      if (text.includes("INSERT INTO occurrence_rollups_hourly")) clock += 1_000_000;
+    },
+  });
+
+  const summary = await runRetention(pool, {
+    batchSize: 2,
+    timeBudgetMs: 500,
+    stepBudgetMs: 100,
+    now: () => clock,
+  });
+
+  assert.deepEqual(summary.droppedPartitions, ["occurrences_2026_10_22"]);
+  assert.equal(summary.deletedRows.sessions, 3);
+  assert.equal(summary.budgetExhausted, false);
 });

@@ -201,7 +201,6 @@ export async function runRetention(
     failures: [],
     budgetExhausted: false,
   };
-  const deadline = now() + timeBudgetMs;
   const lockClient = await pool.connect();
   try {
     const lock = await lockClient.query<{ acquired: boolean }>(
@@ -216,11 +215,9 @@ export async function runRetention(
         rawRetention,
         aggregateRetention,
       );
+      // Each rollup is bounded by its own statement timeout, so partition work
+      // does not draw from the delete budget below.
       for (const partition of partitions) {
-        if (now() >= deadline) {
-          summary.budgetExhausted = true;
-          break;
-        }
         try {
           if (!partition.pastAggregateWindow) {
             await rollUpPartition(pool, partition.name);
@@ -240,6 +237,7 @@ export async function runRetention(
       [aggregateRetention],
     );
     const cutoff = cutoffResult.rows[0]!.cutoff;
+    const deadline = now() + timeBudgetMs;
 
     for (const step of retentionDeleteSteps) {
       let deleted = 0;
