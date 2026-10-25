@@ -4,8 +4,8 @@ import { config } from "./config.js";
 import {
   createPool,
   ensureOccurrencePartitions,
-  withTransaction,
 } from "./db.js";
+import { runRetention } from "./retention.js";
 import { archiveEligiblePartitions } from "./telemetry-archive.js";
 import { startAIClassificationWorker } from "./ai-classification.js";
 import {
@@ -70,23 +70,7 @@ async function runMaintenance(): Promise<void> {
     app.log.info(archived, "eligible occurrence partitions archived");
     if (!archived.lockAcquired) return;
   }
-  // Retention can require an ACCESS EXCLUSIVE lock while dropping an expired
-  // partition. Keep maintenance best-effort so it cannot queue normal traffic
-  // behind a long-running purge.
-  await withTransaction(ingestionPool, async (client) => {
-    await client.query("SET LOCAL lock_timeout = '2s'");
-    await client.query("SET LOCAL statement_timeout = '15s'");
-    await client.query(
-      "SELECT purge_expired_trace_data(INTERVAL '24 hours', INTERVAL '3 days')",
-    );
-    await client.query(
-      "SELECT purge_expired_display_error_impacts(INTERVAL '3 days')",
-    );
-    await client.query(
-      `DELETE FROM display_error_variants_hourly
-       WHERE bucket_at < now() - INTERVAL '3 days'`,
-    );
-  });
+  await runRetention(ingestionPool, { log: app.log });
 }
 
 app.addHook("onClose", async () => {
