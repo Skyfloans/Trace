@@ -35,3 +35,16 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS error_groups_retention_idx
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS display_error_groups_retention_idx
     ON display_error_groups (last_seen_at);
+
+-- occurrences is partitioned, so its single-column foreign key indexes are
+-- built per partition without blocking ingestion and then attached. Partitions
+-- created later inherit the parent index automatically. Every existing
+-- occurrences_YYYY_MM_DD partition must be attached before the parent index is
+-- valid; repeat the CONCURRENTLY + ATTACH pair below for each one.
+CREATE INDEX IF NOT EXISTS occurrences_session_id_idx ON ONLY occurrences (session_id);
+CREATE INDEX IF NOT EXISTS occurrences_group_id_idx ON ONLY occurrences (group_id);
+CREATE INDEX IF NOT EXISTS occurrences_job_id_idx ON ONLY occurrences (job_id);
+-- For each partition p:
+--   CREATE INDEX CONCURRENTLY IF NOT EXISTS p_session_id_idx ON p (session_id);
+--   ALTER INDEX occurrences_session_id_idx ATTACH PARTITION p_session_id_idx;
+--   (and the same for group_id and job_id)
