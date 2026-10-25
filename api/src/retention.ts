@@ -43,6 +43,8 @@ export const retentionDeleteSteps: readonly DeleteStep[] = [
   { table: "display_error_variants_hourly", condition: "bucket_at < $1" },
   { table: "display_error_group_players", condition: "last_seen_at < $1" },
   { table: "display_error_group_jobs", condition: "last_seen_at < $1" },
+  // The directory holds one row per retained player, so it expires with sessions.
+  { table: "project_players", condition: "last_seen_at < $1" },
   {
     table: "sessions",
     condition: `COALESCE(sessions.ended_at, sessions.last_seen_at) < $1
