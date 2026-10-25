@@ -1863,7 +1863,7 @@ kbd {
 .verification-ready span { margin-top: 4px; color: var(--muted); font-size: 12px; }
 .verification-ready > svg { color: var(--success); }
 
-.credential-reveal { display: grid; gap: 16px; margin-bottom: 42px; padding: 18px; border: 1px solid #496c5e; border-radius: var(--radius-lg); background: #15251f; }
+.credential-reveal { scroll-margin-top: 88px; display: grid; gap: 16px; margin-bottom: 42px; padding: 18px; border: 1px solid #496c5e; border-radius: var(--radius-lg); background: #15251f; }
 .credential-heading { min-width: 0; display: flex; align-items: center; gap: 12px; }
 .credential-heading > div { min-width: 0; }
 .credential-icon { width: 40px; height: 40px; display: grid; place-items: center; flex: 0 0 auto; border-radius: var(--radius-md); color: var(--success); background: #20382f; }

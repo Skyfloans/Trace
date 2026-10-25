@@ -1265,6 +1265,14 @@ function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { pro
   const [working, setWorking] = useState(false)
   const [actionError, setActionError] = useState<ApiError | null>(null)
   const [createdKey, setCreatedKey] = useState<{ projectId: string; projectName: string; universeId: string; value: string } | null>(null)
+  const credentialRef = useRef<HTMLElement>(null)
+  // The one-time key renders above the link form and game list, so bring it into view whenever a new key arrives.
+  const createdKeyValue = createdKey?.value
+  useEffect(() => {
+    if (!createdKeyValue) return
+    credentialRef.current?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+    credentialRef.current?.focus({ preventScroll: true })
+  }, [createdKeyValue])
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [inviteUsername, setInviteUsername] = useState('')
   const [inviteRole, setInviteRole] = useState<'admin' | 'member' | 'viewer'>('viewer')
@@ -1504,7 +1512,7 @@ function ManageGames({ projectsReload, firstRun = false, view = 'games' }: { pro
       </article>)}</div>
     </section>}
 
-    {view === 'games' && createdKey && <section className="credential-reveal" aria-labelledby="credential-title">
+    {view === 'games' && createdKey && <section ref={credentialRef} tabIndex={-1} className="credential-reveal" aria-labelledby="credential-title">
       <div className="credential-heading"><span className="credential-icon"><KeyRound size={20} aria-hidden="true" /></span><div><h2 id="credential-title">Save this key for {createdKey.projectName}</h2><p>Trace only shows the complete key once. Add these values to Roblox before leaving this page.</p></div></div>
       <div className="credential-values">
         <CopyBlock label="Secret name" value="TraceKey" />
