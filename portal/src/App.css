@@ -577,14 +577,17 @@ kbd {
 
 .error-table > button {
   width: 100%;
-  min-height: 74px;
+  min-height: 64px;
+  padding-block: 11px;
   border: 0;
   border-bottom: 1px solid var(--line-soft);
   background: transparent;
   text-align: left;
+  transition: background-color 120ms var(--ease);
 }
 
 .error-table > button:hover { background: var(--surface); }
+.error-table > button:focus-visible { outline-offset: -2px; border-radius: var(--radius-sm); }
 .event-count { font-size: 17px; font-variant-numeric: tabular-nums; }
 .secondary { color: var(--muted); font-size: 13px; }
 
@@ -670,13 +673,29 @@ kbd {
 }
 
 .event-message { min-width: 0; }
-.event-message strong,
 .event-message code { display: block; }
-.event-message strong { font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; }
+.event-message strong {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
 .event-message.error strong { color: #f3c3bf; }
 .event-message.warning strong { color: #ead8ad; }
 .event-message.info strong { color: #c3e1ec; }
-.event-message code { margin-top: 5px; color: var(--muted); font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.event-message code {
+  margin-top: 4px;
+  overflow: hidden;
+  color: var(--muted);
+  font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .search-field {
   width: min(720px, 100%);
@@ -2161,6 +2180,12 @@ kbd {
   .nav-section-label { display: none; }
   .sidebar nav button { justify-content: center; padding: 0; }
   .content { padding-inline: 26px; }
+  .filter-bar, .logs-toolbar { flex-wrap: wrap; }
+  .logs-toolbar .compact-search { flex-basis: 100%; min-width: 0; }
+  .filter-bar .select-control,
+  .logs-toolbar .select-control { flex: 1 1 0; min-width: 0; }
+  .error-grid { grid-template-columns: 60px 92px 108px 132px minmax(0, 1fr); }
+  .error-grid > :nth-child(4) { display: none; }
   .player-profile { align-items: flex-start; }
   .player-identity { min-width: 270px; flex-wrap: wrap; }
   .player-detail-profile .player-identity { min-width: 280px; }
@@ -2202,7 +2227,7 @@ kbd {
   .chart-wrap { height: 220px; }
   .chart-wrap text { font-size: 11px; }
   .first-seen { display: none; }
-  .error-grid { grid-template-columns: 58px 88px 104px 64px minmax(170px, 1fr); }
+  .error-grid { grid-template-columns: 58px 88px 104px minmax(0, 1fr); }
   .error-grid > :nth-child(5) { display: none; }
   .player-profile { display: block; padding-top: 10px; }
   .player-identity { min-width: 0; }
@@ -2301,10 +2326,22 @@ kbd {
   .game-switch-wrap, .game-switch { width: 100%; min-width: 0; }
   .game-menu { right: auto; left: 0; width: min(100%, 290px); }
   .filter-bar .select-control,
-  .logs-toolbar .select-control { flex-basis: 100%; }
+  .logs-toolbar .select-control { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .log-summary { flex-wrap: wrap; row-gap: 2px; padding-inline: 0; }
   .section-heading { align-items: flex-start; }
   .chart-legend { gap: 9px; }
-  .error-grid { grid-template-columns: 48px 76px 94px minmax(0, 1fr); gap: 4px; padding-inline: 0; }
+  /* Phones lead with the message, then a compact count, severity and priority line. */
+  .error-table .table-head { display: none; }
+  .error-grid {
+    grid-template-columns: auto auto minmax(0, 1fr);
+    grid-template-areas: "message message message" "count severity priority";
+    gap: 8px 10px;
+    padding-inline: 2px;
+  }
+  .error-grid > .event-count { grid-area: count; font-size: 15px; }
+  .error-grid > .severity-badge { grid-area: severity; }
+  .error-grid > .classification-badge { grid-area: priority; }
+  .error-grid > .event-message { grid-area: message; }
   .error-grid > :nth-child(4),
   .error-grid > :nth-child(5) { display: none; }
   .session-grid { grid-template-columns: minmax(140px, 1fr) 44px 48px; }

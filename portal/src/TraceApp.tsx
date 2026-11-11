@@ -773,11 +773,7 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
         {grouped.error ? <InlineError error={grouped.error} retry={grouped.reload} /> : grouped.loading && !grouped.data ? <RowsLoading /> : dashboardErrors.length ? (
           <div className="error-table">
             <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>AI priority</span><span>Type</span><span>First seen</span><span>Message</span></div>
-            {dashboardErrors.map((error) => (
-              <button className="error-grid" key={error.fingerprint} onClick={() => onOpenError(error.fingerprint)} aria-label={`Open error detail. ${exactNumberFormatter.format(error.count)} occurrences. Severity ${error.severity}. AI priority ${labelErrorClassification(error.classification.category, error.classification.status)}. Type ${error.side}. Message: ${error.title}.`}>
-                <strong className="event-count" title={`${exactNumberFormatter.format(error.count)} occurrences`}>{formatCount(error.count)}</strong><SeverityBadge level={error.severity} /><ClassificationBadge kind="error" classification={error.classification} /><span className="secondary">{labelSide(error.side)}</span><time className="secondary first-seen">{formatDate(error.firstSeenAt)}</time><span className={`event-message ${error.severity}`}><strong>{error.title}</strong><code>{error.source ?? 'Unknown source'}</code></span>
-              </button>
-            ))}
+            {dashboardErrors.map((error) => <ErrorGroupRow key={error.fingerprint} group={error} seenAt={error.firstSeenAt} onOpen={onOpenError} />)}
           </div>
         ) : <PageStatus compact title="No matching events" copy="No events were recorded for these filters and time range." />}
         {paginationError && <InlineError error={paginationError} retry={loadMoreErrors} />}
@@ -1658,7 +1654,7 @@ function AllLogs({ project, projects, projectMenu, setProjectMenu, setProjectId,
       {groupsResource.error && <InlineError error={groupsResource.error} retry={groupsResource.reload} />}
       {groupsResource.loading && !groupsResource.data ? <RowsLoading /> : filtered.length ? <div className="error-table">
         <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>AI priority</span><span>Type</span><span>Last seen</span><span>Message</span></div>
-        {filtered.map((group) => <button className="error-grid" onClick={() => onOpenError(group.fingerprint)} key={group.fingerprint} aria-label={`Open grouped event. ${exactNumberFormatter.format(group.count)} occurrences. Severity ${group.severity}. AI priority ${labelErrorClassification(group.classification.category, group.classification.status)}. Type ${group.side}. Message: ${group.title}.`}><strong className="event-count" title={`${exactNumberFormatter.format(group.count)} occurrences`}>{formatCount(group.count)}</strong><SeverityBadge level={group.severity} /><ClassificationBadge kind="error" classification={group.classification} /><span className="secondary">{labelSide(group.side)}</span><time className="secondary first-seen">{formatDate(group.lastSeenAt)}</time><span className={`event-message ${group.severity}`}><strong>{group.title}</strong><code>{group.source ?? 'Unknown source'}</code></span></button>)}
+        {filtered.map((group) => <ErrorGroupRow key={group.fingerprint} group={group} seenAt={group.lastSeenAt} onOpen={onOpenError} />)}
       </div> : !groupsResource.error ? <PageStatus compact title="No grouped events match" copy="Try a broader text, time, severity, AI priority, or source filter." /> : null}
       {(page > 1 || nextCursor) && <Pagination page={page} hasNext={Boolean(nextCursor)} loading={groupsResource.loading} onPrevious={previousPage} onNext={nextPage} label="Grouped logs pages" />}
     </>
@@ -1926,6 +1922,29 @@ function ServerJobDetails({ project, jobId, selectedEventId, onBack, onOpenSessi
       <section className="data-section"><div className="section-heading"><div><h2>Player sessions</h2><p>Sessions observed in this server job</p></div></div>{sessions.error ? <InlineError error={sessions.error} retry={sessions.reload} /> : !sessions.data ? <RowsLoading /> : sessions.data.data.length ? <div className="session-table">{sessions.data.data.map((session) => <button className="simple-session-row" key={session.id} onClick={() => onOpenSession(session.id)}><PlayerAvatar player={session.player} headshot={session.player.avatarUrl ?? headshots.data?.[session.player.robloxUserId] ?? null} /><span><strong>{session.player.displayName}</strong><small>@{session.player.username} · {formatDate(session.startedAt)}</small></span><b>{session.errorCount} errors</b></button>)}</div> : <PageStatus compact title="No player sessions" copy="This job has no retained player sessions." />}</section>
     </>
   )
+}
+
+// Grouped titles can carry whole JSON payloads or stack dumps. Rows show a bounded
+// single-line preview; the error detail page keeps the complete message.
+const MESSAGE_PREVIEW_LENGTH = 320
+
+function previewMessage(message: string) {
+  const collapsed = message.replace(/\s+/g, ' ').trim()
+  return collapsed.length > MESSAGE_PREVIEW_LENGTH ? `${collapsed.slice(0, MESSAGE_PREVIEW_LENGTH).trimEnd()}…` : collapsed
+}
+
+function ErrorGroupRow({ group, seenAt, onOpen }: { group: GroupedErrorSummary; seenAt: string; onOpen: (fingerprint: string) => void }) {
+  const preview = previewMessage(group.title)
+  const exactCount = exactNumberFormatter.format(group.count)
+  const priority = labelErrorClassification(group.classification.category, group.classification.status)
+  return <button className="error-grid" onClick={() => onOpen(group.fingerprint)} aria-label={`Open grouped event. ${exactCount} occurrences. Severity ${group.severity}. AI priority ${priority}. Type ${group.side}. Message: ${preview}`}>
+    <strong className="event-count" title={`${exactCount} occurrences`}>{formatCount(group.count)}</strong>
+    <SeverityBadge level={group.severity} />
+    <ClassificationBadge kind="error" classification={group.classification} />
+    <span className="secondary">{labelSide(group.side)}</span>
+    <time className="secondary first-seen" dateTime={seenAt}>{formatDate(seenAt)}</time>
+    <span className={`event-message ${group.severity}`}><strong title={preview}>{preview}</strong><code title={group.source ?? undefined}>{group.source ?? 'Unknown source'}</code></span>
+  </button>
 }
 
 function OccurrenceList({ occurrences, selectedId, onOpen }: { occurrences: LogOccurrence[]; selectedId?: string | null; onOpen: (occurrence: LogOccurrence) => void }) {
