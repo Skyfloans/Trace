@@ -753,7 +753,7 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
 
   return (
     <>
-      <PageTitle title="Dashboard" action={<ProjectSwitcher project={project} projects={projects} open={projectMenu} setOpen={setProjectMenu} setProjectId={setProjectId} />} />
+      <PageTitle title="Overview" action={<ProjectSwitcher project={project} projects={projects} open={projectMenu} setOpen={setProjectMenu} setProjectId={setProjectId} />} />
       <div className="filter-bar" aria-label="Dashboard filters">
         <LabeledSelect label="Time range" value={timeRangeValue} onChange={setTimeRangeValue} options={[['1', 'Last hour'], ['8', 'Last 8 hours'], ['24', 'Last 24 hours'], ['72', 'Last 3 days']]} />
         <LabeledSelect label="Severity" value={severity} onChange={setSeverity} options={[['all', 'All'], ['error', 'Error'], ['warning', 'Warning']]} />
@@ -769,7 +769,7 @@ function Overview({ project, projects, projectMenu, setProjectMenu, setProjectId
         {activity.error ? <InlineError error={activity.error} retry={activity.reload} /> : <ErrorChart data={activity.data?.data ?? []} loading={activity.loading} side={side} />}
       </section>
       <section className="data-section" aria-labelledby="common-errors-title">
-        <div className="section-heading"><div><h2 id="common-errors-title">Errors and warnings by count</h2><p>Most frequent events first</p></div><button className="text-button" onClick={onOpenLogs}>Open all logs</button></div>
+        <div className="section-heading"><div><h2 id="common-errors-title">Errors and warnings by count</h2><p>Most frequent events first</p></div><button className="text-button" onClick={onOpenLogs}>Open all logs<ChevronRight size={16} aria-hidden="true" /></button></div>
         {grouped.error ? <InlineError error={grouped.error} retry={grouped.reload} /> : grouped.loading && !grouped.data ? <RowsLoading /> : dashboardErrors.length ? (
           <div className="error-table">
             <div className="table-head error-grid"><span>Count</span><span>Severity</span><span>AI priority</span><span>Type</span><span>First seen</span><span>Message</span></div>
@@ -832,6 +832,14 @@ function GameIdentity({ project, enrich = false }: { project: Project; enrich?: 
   return <div className="game-identity"><ProjectIcon project={displayProject} /><span><strong>{displayProject.name}</strong><small>{project.robloxUniverseId ? `Universe ${project.robloxUniverseId}` : 'Roblox experience'}</small></span></div>
 }
 
+// Rounds an axis step to 1, 2 or 5 times a power of ten so labels read as 0, 50, 100…
+function niceTickStep(roughStep: number) {
+  if (roughStep <= 1) return 1
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep))
+  const normalized = roughStep / magnitude
+  return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * magnitude
+}
+
 function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: boolean; side: string }) {
   const showClient = side !== 'server'
   const showServer = side !== 'client'
@@ -844,11 +852,12 @@ function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: 
     server: bucket.serverCount,
   }))
   const highest = Math.max(1, ...visibleData.flatMap((item) => [showClient ? item.client : 0, showServer ? item.server : 0]))
-  const max = Math.max(5, Math.ceil(highest / 5) * 5)
+  const tickStep = niceTickStep(highest / 4)
+  const max = tickStep * Math.max(1, Math.ceil(highest / tickStep))
   const { width, height } = chartSize
   const top = 18
   const bottom = 32
-  const ticks = [0, Math.round(max / 3), Math.round(max * 2 / 3), max]
+  const ticks = Array.from({ length: Math.round(max / tickStep) + 1 }, (_, index) => index * tickStep)
   const plotLeft = Math.max(36, Math.max(...ticks.map((tick) => String(tick).length)) * 7 + 14)
   const plotRight = width - 18
   const plotWidth = Math.max(1, plotRight - plotLeft)
@@ -858,6 +867,8 @@ function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: 
     return [x, y] as const
   }
   const line = (key: 'client' | 'server') => visibleData.map((item, index) => point(index, item[key]).join(',')).join(' ')
+  // Time labels need roughly 64px each, so narrow charts label every few buckets.
+  const labelEvery = Math.max(1, Math.ceil(visibleData.length / Math.max(2, Math.floor(plotWidth / 64))))
 
   useEffect(() => {
     const element = chartRef.current
@@ -878,19 +889,26 @@ function ErrorChart({ data, loading, side }: { data: ActivityBucket[]; loading: 
   return (
     <div className={`chart-wrap ${loading ? 'is-loading' : ''}`} ref={chartRef}>
       {visibleData.length ? <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Client and server event activity" onPointerLeave={() => setTooltip(null)}>
-        {ticks.map((tick) => { const [, y] = point(0, tick); return <line key={tick} x1={plotLeft} x2={plotRight} y1={y} y2={y} className="chart-grid" /> })}
-        {showClient && <polygon points={`${plotLeft},${height - bottom} ${line('client')} ${plotRight},${height - bottom}`} className="chart-area" />}
-        {showClient && <polyline points={line('client')} className="chart-line client" />}
+        <defs>
+          <linearGradient id="chart-fill-client" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" className="chart-fill-start client" /><stop offset="100%" className="chart-fill-end" /></linearGradient>
+          <linearGradient id="chart-fill-server" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" className="chart-fill-start server" /><stop offset="100%" className="chart-fill-end" /></linearGradient>
+        </defs>
+        {ticks.map((tick) => { const [, y] = point(0, tick); return <line key={tick} x1={plotLeft} x2={plotRight} y1={y} y2={y} className={tick === 0 ? 'chart-grid baseline' : 'chart-grid'} /> })}
+        {showServer && <polygon points={`${plotLeft},${height - bottom} ${line('server')} ${plotRight},${height - bottom}`} fill="url(#chart-fill-server)" />}
+        {showClient && <polygon points={`${plotLeft},${height - bottom} ${line('client')} ${plotRight},${height - bottom}`} fill="url(#chart-fill-client)" />}
+        {tooltip && <line x1={point(tooltip.index, 0)[0]} x2={point(tooltip.index, 0)[0]} y1={top} y2={height - bottom} className="chart-guide" />}
         {showServer && <polyline points={line('server')} className="chart-line server" />}
+        {showClient && <polyline points={line('client')} className="chart-line client" />}
         {visibleData.map((item, index) => {
           const [clientX, clientY] = point(index, item.client)
           const [serverX, serverY] = point(index, item.server)
-          const showLabel = visibleData.length <= 12 || index % Math.ceil(visibleData.length / 8) === 0 || index === visibleData.length - 1
+          const showLabel = index % labelEvery === 0
           const step = visibleData.length > 1 ? plotWidth / (visibleData.length - 1) : plotWidth
           const hitStart = index === 0 ? plotLeft / 2 : clientX - step / 2
           const hitEnd = index === visibleData.length - 1 ? width : clientX + step / 2
           const tooltipY = Math.min(showClient ? clientY : height, showServer ? serverY : height)
-          return <g key={`${item.time}-${index}`}>{showLabel && <text x={clientX} y={height - 8} textAnchor="middle">{item.time}</text>}{showClient && <circle cx={clientX} cy={clientY} r="5" className="chart-dot client" />}{showServer && <circle cx={serverX} cy={serverY} r="5" className="chart-dot server" />}<rect className="chart-hit-area" x={hitStart} y={top} width={Math.max(1, hitEnd - hitStart)} height={height - top - bottom} tabIndex={0} role="button" aria-label={`${item.time}. ${showClient ? `${item.client} client events. ` : ''}${showServer ? `${item.server} server events.` : ''}`} onPointerEnter={() => setTooltip({ index, x: clientX, y: tooltipY })} onPointerMove={() => setTooltip({ index, x: clientX, y: tooltipY })} onFocus={() => setTooltip({ index, x: clientX, y: tooltipY })} onBlur={() => setTooltip(null)} /></g>
+          const active = tooltip?.index === index
+          return <g key={`${item.time}-${index}`}>{showLabel && <text x={clientX} y={height - 8} textAnchor="middle">{item.time}</text>}{active && showServer && <circle cx={serverX} cy={serverY} r="4.5" className="chart-dot server" />}{active && showClient && <circle cx={clientX} cy={clientY} r="4.5" className="chart-dot client" />}<rect className="chart-hit-area" x={hitStart} y={top} width={Math.max(1, hitEnd - hitStart)} height={height - top - bottom} tabIndex={0} role="button" aria-label={`${item.time}. ${showClient ? `${item.client} client events. ` : ''}${showServer ? `${item.server} server events.` : ''}`} onPointerEnter={() => setTooltip({ index, x: clientX, y: tooltipY })} onPointerMove={() => setTooltip({ index, x: clientX, y: tooltipY })} onFocus={() => setTooltip({ index, x: clientX, y: tooltipY })} onBlur={() => setTooltip(null)} /></g>
         })}
         {ticks.map((tick) => { const [, y] = point(0, tick); return <text key={tick} x={plotLeft - 10} y={y + 4} textAnchor="end">{tick}</text> })}
       </svg> : <div className="chart-empty">{loading ? 'Loading activity…' : 'No activity in this range'}</div>}
